@@ -1,0 +1,44 @@
+// ---------------------------------------------------------------------------
+// Blast radius — why business domain is a TAG, not a resource boundary.
+//
+// The Inventory Service lives in the Platform domain, but it is consumed by Retail
+// and Payments. When it degrades, the damage shows up in domains that do not own it.
+//
+// If you had split Application Insights or Log Analytics along domain lines, this
+// query would need to cross those boundaries to tell you anything useful. Because
+// the estate follows doc 02 (workload-scoped App Insights, one shared workspace),
+// it is a single ordinary query.
+// ---------------------------------------------------------------------------
+let domainOf = datatable(workload: string, domain: string)
+[
+    "retail-web", "Retail",
+    "retail-api-orders", "Retail",
+    "retail-api-catalog", "Retail",
+    "pay-api-gateway", "Payments",
+    "pay-worker-settlement", "Payments",
+    "cust-api-profile", "Customer",
+    "cust-worker-notify", "Customer",
+    "shared-api-inventory", "Platform"
+];
+// Every trace that touched a failing Inventory call...
+let impactedTraces =
+    AppDependencies
+    | where TimeGenerated {TimeRange}
+    | where Target has "shared-api-inventory"
+    | where Success == false
+    | distinct OperationId;
+// ...and every service that participated in those traces.
+AppRequests
+| where TimeGenerated {TimeRange}
+| where OperationId in (impactedTraces)
+| summarize
+    ImpactedOperations = dcount(OperationId),
+    FailedRequests     = countif(Success == false)
+  by workload = AppRoleName
+| join kind=leftouter domainOf on workload
+| project
+    Domain = coalesce(domain, "unknown"),
+    Service = workload,
+    ImpactedOperations,
+    FailedRequests
+| order by ImpactedOperations desc

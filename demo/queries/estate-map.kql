@@ -1,0 +1,97 @@
+// Estate map — a single holistic dependency graph across every workload.
+//
+// This is the cross-estate equivalent of the per-resource Application Map. Application Map
+// is scoped to one Application Insights resource (plus whatever it discovers); this query
+// spans the whole workspace, so shared services appear once with fan-in from every domain
+// that consumes them.
+//
+// SHAPE (required by the workbook "graph" visualization):
+//   The result is a single MIXED result set.
+//     * Node rows: Id is set, SourceId/TargetId are empty.
+//     * Edge rows: SourceId/TargetId are set, Id is empty.
+//   The visualization separates them by inspecting those columns.
+//
+// HOW EDGES ARE DERIVED
+//   A dependency and the request it caused are linked by id: the caller emits a dependency
+//   with Id = X, and the callee's request carries ParentId = X. Joining on that gives a true
+//   service -> service edge. Falling back to the dependency Target alone would give
+//   "service -> hostname", which does not resolve to a node and would fragment the map.
+//
+//   Some dependencies have no matching request (sampling, or the callee's telemetry landing
+//   outside the time window). Those would otherwise create a DUPLICATE node for a service
+//   that already exists, so for HTTP we resolve the target hostname back to a known role
+//   name. Only HTTP is treated this way; data stores keep their full target so that four
+//   distinct databases do not collapse into a single node.
+
+let roles = toscalar(AppRequests | where TimeGenerated {TimeRange} | summarize make_set(AppRoleName));
+let depsResolved =
+    AppDependencies
+    | where TimeGenerated {TimeRange}
+    | project depId = Id, src = AppRoleName, Target, DependencyType, DurationMs, Success
+    | join kind=leftouter (
+        AppRequests | where TimeGenerated {TimeRange} | project depId = ParentId, dstRole = AppRoleName
+      ) on depId
+    // For HTTP only, take the first label of the hostname and see if it is a known service.
+    | extend httpRole = iff(DependencyType == "HTTP",
+        tostring(split(tostring(split(tostring(split(Target, "/")[0]), ":")[0]), ".")[0]), "")
+    | extend isSvc = isnotempty(dstRole) or httpRole in (roles)
+    // SQL/Cosmos targets look like "host:port | DbName" — the database name is the useful label.
+    | extend dbName = tostring(split(Target, "| ")[1])
+    | extend tgt = case(
+        isnotempty(dstRole), dstRole,
+        httpRole in (roles), httpRole,
+        isnotempty(dbName),  dbName,
+        tostring(split(tostring(split(Target, "/")[0]), ":")[0]))
+    | extend tgtKind = case(
+        isSvc, "service",
+        DependencyType in ("SQL", "mysql", "postgresql"), "database",
+        DependencyType in ("cosmosdb", "redis", "Azure blob", "Azure table"), "datastore",
+        DependencyType in ("servicebus", "Queue Message", "eventhub"), "queue",
+        "external");
+// ---------------------------------------------------------------- nodes
+let svcNodes =
+    AppRequests
+    | where TimeGenerated {TimeRange}
+    | summarize Calls = count(), Fails = countif(Success == false),
+                P95 = round(percentile(DurationMs, 95), 0)
+      by Id = AppRoleName
+    | extend Kind = "service";
+let infraNodes =
+    depsResolved
+    | where not(isSvc)
+    | summarize Calls = count(), Fails = countif(Success == false),
+                P95 = round(percentile(DurationMs, 95), 0)
+      by Id = tgt, Kind = tgtKind;
+let nodes =
+    union svcNodes, infraNodes
+    | join kind=leftouter (AppCatalog | project workload, displayName, domain, criticality, owner, appUrl, slo)
+        on $left.Id == $right.workload
+    | extend FailPct = iff(Calls == 0, 0.0, round(100.0 * Fails / Calls, 2))
+    | extend Domain = coalesce(domain, "shared infrastructure"),
+             Owner  = coalesce(owner, "n/a"),
+             Tier   = coalesce(criticality, "n/a")
+    | extend Name = coalesce(displayName, Id)
+    | extend Status = case(
+        Kind != "service",  "Infra",
+        FailPct >= 5.0,     "Error",
+        FailPct >= 1.0,     "Warning",
+                            "Healthy")
+    // The graph visualization allows only ONE tooltip string per content slot, so compose
+    // the whole hover card here and reference this column from tooltipFormat.
+    | extend Hover = strcat(
+        Name, "  [", Kind, "]",
+        "\ndomain: ", Domain,
+        "\nowner: ", Owner, "   tier: ", Tier,
+        "\ncalls: ", Calls, "   failures: ", Fails, " (", FailPct, "%)",
+        "\nP95: ", P95, " ms",
+        iff(isempty(appUrl), "", strcat("\n", appUrl)))
+    | project Id, Name, Kind, Domain, Owner, Tier, Calls, Fails, FailPct, P95, Status, Hover;
+// ---------------------------------------------------------------- edges
+let links =
+    depsResolved
+    | summarize Calls = count(), Fails = countif(Success == false) by SourceId = src, TargetId = tgt, DependencyType
+    | extend EdgeLabel = iff(Fails > 0, strcat(DependencyType, "  ", Calls, "  (", Fails, " failed)"),
+                                        strcat(DependencyType, "  ", Calls))
+    | project SourceId, TargetId, Calls, EdgeLabel;
+nodes
+| union links

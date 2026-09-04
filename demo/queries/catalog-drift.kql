@@ -1,0 +1,38 @@
+// ---------------------------------------------------------------------------
+// Metadata quality / catalog drift.
+//
+// A portfolio is only as trustworthy as its metadata. This finds the three ways
+// a portfolio silently rots:
+//
+//   1. Emitting  — a service is sending telemetry but is not in the catalog
+//   2. Orphaned  — a service is in the catalog but has sent nothing (dead? renamed? broken?)
+//   3. Untagged  — an Azure resource is missing required taxonomy tags
+//
+// (3) is an Azure Resource Graph question and lives in the workbook's inventory tab.
+// (1) and (2) are answered here.
+// ---------------------------------------------------------------------------
+let catalog = datatable(workload: string)
+[
+    "retail-web", "retail-api-orders", "retail-api-catalog",
+    "pay-api-gateway", "pay-worker-settlement",
+    "cust-api-profile", "cust-worker-notify",
+    "shared-api-inventory"
+];
+let emitting =
+    union AppRequests, AppDependencies
+    | where TimeGenerated {TimeRange}
+    | summarize LastSeen = max(TimeGenerated), Items = count() by workload = AppRoleName;
+union
+    (emitting
+     | join kind=leftanti catalog on workload
+     | project Issue = "🔴 Emitting telemetry but missing from catalog",
+               Service = workload, LastSeen, Items),
+    (catalog
+     | join kind=leftanti emitting on workload
+     | project Issue = "🟠 In catalog but no telemetry received",
+               Service = workload, LastSeen = datetime(null), Items = 0),
+    (emitting
+     | join kind=inner catalog on workload
+     | project Issue = "🟢 Catalog and telemetry agree",
+               Service = workload, LastSeen, Items)
+| order by Issue asc, Service asc

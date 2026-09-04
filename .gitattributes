@@ -1,0 +1,25 @@
+# Normalize line endings so the repo is not polluted by CRLF/LF churn.
+* text=auto
+
+# Shell scripts MUST check out with LF, on every platform.
+#
+# These were authored on Windows and were CRLF on disk. Git Bash tolerates that,
+# but bash on Linux, macOS and WSL does not: a CRLF script fails immediately with
+#   ./deploy.sh: line 2: $'\r': command not found
+# Forcing eol=lf means the scripts stay runnable no matter where they are cloned.
+*.sh text eol=lf
+
+# Keep these LF too — they are read by tools that dislike stray CR.
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.kql   text eol=lf
+*.json  text eol=lf
+*.md    text
+*.cs    text
+*.csproj text
+
+# Binary — never diff, never normalize.
+*.pptx  binary
+*.png   binary
+*.jpg   binary
+*.pdf   binary

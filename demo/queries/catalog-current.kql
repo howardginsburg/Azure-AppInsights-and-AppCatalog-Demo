@@ -1,0 +1,76 @@
+// ---------------------------------------------------------------------------
+// The catalog as a reference table.
+//
+// A Log Analytics custom table is append-only. There is no UPDATE and no DELETE,
+// so "the catalog" is not the set of rows in AppCatalog_CL -- it is the newest
+// row per workload, minus anything that has been tombstoned.
+//
+// Two bookkeeping columns make that expressible (both written by sync-catalog.mjs):
+//
+//   isActive   false marks a tombstone. Without it, removing a service from the
+//              source would be invisible: arg_max() would keep returning its last
+//              known row forever and the retired service could never leave the
+//              portfolio.
+//   rowHash    content hash of the business columns. The sync only writes rows
+//              whose hash changed, so this table is a genuine change log rather
+//              than N identical rows per day.
+//
+// The three queries below are the canonical shapes. The first is the one that
+// matters -- everything downstream should join against it.
+// ---------------------------------------------------------------------------
+
+// 1. CURRENT STATE — the catalog as it stands right now.
+//    This is the query the portfolio joins against.
+AppCatalog_CL
+| summarize arg_max(TimeGenerated, *) by workload
+| where isActive
+| project workload, displayName, domain, criticality, owner, businessOwner,
+          description, appUrl, docsUrl, runbookUrl, repoUrl, slo, onCall,
+          LastChanged = TimeGenerated
+| order by domain asc, criticality asc, workload asc
+
+
+// ---------------------------------------------------------------------------
+// 2. POINT IN TIME — what did the catalog look like during last week's incident?
+//    This is the whole reason to keep the table alongside the saved function:
+//    'AppCatalog' only ever knows the present.
+//
+// let asOf = datetime(2026-09-01 14:00:00);
+// AppCatalog_CL
+// | where TimeGenerated <= asOf
+// | summarize arg_max(TimeGenerated, *) by workload
+// | where isActive
+// | project workload, displayName, owner, onCall, criticality
+
+
+// ---------------------------------------------------------------------------
+// 3. CHANGE HISTORY — every ownership change, retirement, and reactivation.
+//    Because unchanged rows are never rewritten, each row here is a real event.
+//
+//    Keyed off rowHash rather than a single field, so any edit is caught. The
+//    isnotempty(rowHash) filter skips rows written before the bookkeeping columns
+//    existed; in a clean deployment it is a no-op.
+//
+// AppCatalog_CL
+// | where isnotempty(rowHash)
+// | order by workload asc, TimeGenerated asc
+// | extend PrevWorkload = prev(workload), PrevHash = prev(rowHash),
+//          PrevActive = prev(isActive), PrevOwner = prev(owner)
+// | where workload == PrevWorkload
+// | where rowHash != PrevHash or isActive != PrevActive
+// | project TimeGenerated, workload,
+//           Change = case(isActive == false,   strcat("retired (was ", PrevOwner, ")"),
+//                         PrevActive == false, "reactivated",
+//                         owner != PrevOwner,  strcat("owner: ", PrevOwner, " -> ", owner),
+//                                              "details updated"),
+//           syncId
+// | order by TimeGenerated desc
+
+
+// ---------------------------------------------------------------------------
+// Note: the saved function 'AppCatalog' answers query 1 directly and needs no
+// arg_max, because it is ARM metadata that gets replaced wholesale on each sync.
+// It also has no retention, so it survives indefinitely. Prefer it for joins;
+// use AppCatalog_CL when you need history.
+//
+//   AppCatalog | where isActive

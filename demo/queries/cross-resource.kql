@@ -1,0 +1,39 @@
+// ---------------------------------------------------------------------------
+// Cross-resource querying — and the payoff for following doc 02.
+//
+// This estate has EIGHT Application Insights resources and ONE Log Analytics
+// workspace. Because every App Insights resource is workspace-based and points at
+// the same workspace, querying all eight is just... a normal query. No union of
+// resources, no workspace() calls, no 100-resource ceiling to worry about.
+//
+// That is the entire argument of doc 02 reduced to a single observable fact.
+// ---------------------------------------------------------------------------
+
+// --- Form 1: the estate as deployed. Nothing special required. ---
+AppRequests
+| where TimeGenerated {TimeRange}
+| summarize Requests = count(), Failures = countif(Success == false) by AppRoleName
+| order by Requests desc;
+
+
+// --- Form 2: what you would have to write if you had split workspaces ---
+// Kept here as a teaching contrast. Every additional workspace is another entry in
+// this list, and the query is capped at 100 workspaces or classic resources.
+//
+// union
+//     workspace("log-obsdemo").AppRequests,
+//     workspace("log-retail-eu").AppRequests,
+//     workspace("log-payments-us").AppRequests
+// | where TimeGenerated > ago(24h)
+// | summarize Requests = count() by AppRoleName
+
+
+// --- Form 3: dependency health across the whole estate, by technology ---
+// AppDependencies
+// | where TimeGenerated > ago(24h)
+// | summarize
+//     Calls    = count(),
+//     Failures = countif(Success == false),
+//     P95ms    = round(percentile(DurationMs, 95), 0)
+//   by DependencyType, Target
+// | order by Failures desc, Calls desc
