@@ -93,5 +93,41 @@ let links =
     | extend EdgeLabel = iff(Fails > 0, strcat(DependencyType, "  ", Calls, "  (", Fails, " failed)"),
                                         strcat(DependencyType, "  ", Calls))
     | project SourceId, TargetId, Calls, EdgeLabel;
-nodes
-| union links
+// ---------------------------------------------------------------- focus
+// FOCUS, NOT EXCLUDE. The Domain/Tier filters everywhere else in the workbook remove rows,
+// which is correct for a list. On a graph it is actively wrong: selecting Payments would
+// delete the Retail caller of shared-api-inventory, and the map would still render — just
+// silently missing the fan-in that is the entire reason a shared service is interesting.
+//
+// So the selection picks a FOCUS set, and the map keeps that set plus everything one hop
+// away. Neighbours are marked Status = "Context" and drawn gray, so the eye goes to the
+// selection while the surrounding topology stays visible.
+//
+// Infrastructure nodes carry no domain or tier, so they can only ever arrive as neighbours
+// of a focused service — which is the behaviour we want: the databases a domain touches
+// appear, the ones it does not are dropped.
+let selDomain = dynamic([{Domain}]);
+let selTier = dynamic([{Tier}]);
+let noFilter = array_length(selDomain) == 0 and array_length(selTier) == 0;
+let focusIds = toscalar(
+    nodes
+    | where (array_length(selDomain) == 0 or Domain in (selDomain))
+        and (array_length(selTier) == 0 or Tier in (selTier))
+    | summarize make_set(Id));
+let neighbourIds = toscalar(
+    links
+    | where SourceId in (focusIds) or TargetId in (focusIds)
+    | mv-expand nid = pack_array(SourceId, TargetId) to typeof(string)
+    | summarize make_set(nid));
+let keep = set_union(focusIds, neighbourIds);
+let nodesFocused =
+    nodes
+    | where noFilter or Id in (keep)
+    | extend Status = iff(noFilter or set_has_element(focusIds, Id), Status, "Context")
+    | extend Hover = iff(noFilter or set_has_element(focusIds, Id), Hover,
+                         strcat(Hover, "\n\n(context — outside the current filter)"));
+let linksFocused =
+    links
+    | where noFilter or (SourceId in (keep) and TargetId in (keep));
+nodesFocused
+| union linksFocused

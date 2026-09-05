@@ -495,26 +495,38 @@ blast-radius list.
 
 **Monitor** → **Workbooks** → **Application Portfolio - Observability Demo**.
 
-Five tabs:
+Above the tabs are three filters that apply everywhere: **Time range**, **Domain**, and
+**Criticality**. Domain and Criticality are multi-select and driven off `AppCatalog` itself,
+so adding a domain to `catalog.json` makes it appear in the dropdown with no workbook change.
+Selecting nothing means *everything* — there is deliberately no "All" entry, because an empty
+selection already expands to `dynamic([])`, which every query treats as "no filter".
 
-1. **Portfolio** — one row per application: health, availability against its own SLO, request
-   volume, P95, owner, business owner, and live links to the app, docs, runbook, and repo.
-   Availability is heat-mapped, so a red cell is a real problem.
+Six tabs:
+
+1. **Portfolio** — a **tree**. Collapsed, it is one row per business domain with rolled-up
+   availability, request volume and P95 — the executive view. Expand a domain and it becomes
+   one row per application: health against that app's *own* SLO, owner, business owner, and
+   live links to the app, docs, runbook and repo. Availability is heat-mapped, so a red cell
+   is a real problem. This is the "drill in and out" answer: same tile, two audiences.
 2. **Estate map** — see Stop 7a.
 3. **Domain rollup** — the same health aggregated by business domain. This is the taxonomy
    paying off: because `domain` is a *tag*, an executive-facing rollup is one `by Domain`.
 4. **Cross-resource** — every dependency across all eight services in a single result set.
-5. **Metadata quality** — see Stop 8.
+5. **Transactions** — see Stop 7b.
+6. **Metadata quality** — see Stop 8.
+
+Clicking the first column of the rollup, cross-resource and drift grids opens the whole row
+as a property grid in a **side pane**, rather than navigating away. Useful when a row is wider
+than the screen and you do not want to lose your place mid-demo.
 
 The important thing here is the join. Azure knows request rates, failure rates, and latency.
 Azure has no idea what a service is *for*, who owns it, what its SLO is, or where its runbook
 lives. That half comes from `catalog/catalog.json`, and the workbook joins the two on the
 workload key.
 
-The Portfolio tab inlines the catalog as a KQL `datatable`, so it only changes when someone
-re-runs `build-workbook.mjs`. The **Estate map** tab instead joins the live `AppCatalog`
-reference table that `deploy.sh` publishes — edit the catalog, re-run the sync, and the map
-updates with no rebuild. See [Keeping the catalog current](#keeping-the-catalog-current).
+Every tab joins the same live `AppCatalog` reference function that `deploy.sh` publishes —
+edit the catalog, re-run the sync, and every tile updates with no rebuild. See
+[Keeping the catalog current](#keeping-the-catalog-current).
 
 ---
 
@@ -539,6 +551,21 @@ the **whole estate**, in one picture.
 5. **The honeycomb below** drops the edges and groups every service by domain, colour-coded
    against each service's *own* SLO. The map answers "what talks to what"; the honeycomb
    answers "how is each domain doing".
+6. **Now set the Domain filter to `Payments`.** The map does not shrink to two nodes. It keeps
+   the Payments services in full colour and keeps everything one hop away — including
+   `retail-api-orders` and `Inventory Service` — in **gray**, labelled *context* on hover. The
+   databases Payments does not touch disappear.
+
+**Why the map filters differently to everything else.** On a list, filtering means *remove
+rows*, and that is correct. On a graph it is quietly wrong. A plain `Domain == Payments`
+filter would delete the Retail caller of `Inventory Service` — and the map would still render
+perfectly happily, just missing the cross-domain fan-in that is the single most important
+thing on the tab. It fails *silently*, which is the worst way to fail in front of an audience.
+
+So the map treats the selection as a **focus**, not an exclusion: keep the selected nodes plus
+their immediate neighbours, and gray the neighbours out. You get emphasis without losing the
+blast radius. Every other tab uses ordinary exclusion filtering, because for a list that is
+the right semantics.
 
 **How the edges are derived** — this matters, because it is the difference between a real map
 and a drawing. A caller emits a dependency with `Id = X`; the callee's request carries
@@ -571,61 +598,121 @@ Two corrections were needed to make it honest, both worth knowing if you adapt t
 
 ---
 
+## Stop 7b — One click from a failure to the whole transaction
+
+The **Transactions** tab lists every failed request in the estate — from any service, not just
+the web tier — and honours the Domain and Criticality filters.
+
+**Click any row.** The grid below reconstructs the *entire* distributed transaction that
+failure belonged to, as a real call tree: every service, every SQL statement, every Service Bus
+hop, indented by parent/child and offset in milliseconds from the first span.
+
+A typical checkout trace has sixteen spans across five services:
+
+```
+▸ POST /checkout                        retail-web              +0 ms     383 ms
+  · POST /api/orders                    retail-web        HTTP  +6 ms     378 ms
+    ▸ POST /api/orders                  retail-api-orders       +10 ms    372 ms
+      · POST /api/reserve               retail-api-orders HTTP  +16 ms     46 ms
+        ▸ POST /api/reserve             shared-api-inventory    +18 ms     42 ms
+          · SQL: UPDATE dbo.StockLevels shared-api-inventory SQL +22 ms    27 ms
+      · POST /api/authorize             retail-api-orders HTTP  +66 ms    271 ms
+        ▸ POST /api/authorize           pay-api-gateway         +68 ms    267 ms
+          · POST /v2/charges            pay-api-gateway   HTTP  +72 ms    238 ms
+          · ServiceBusSender.Send       pay-api-gateway   sb    +310 ms     9 ms
+      · SQL: INSERT dbo.Orders          retail-api-orders SQL   +339 ms    18 ms
+            ▸ ProcessMessage            pay-worker-settlement   +459 ms    69 ms
+              · SQL: INSERT ...         pay-worker-settlement SQL +463 ms  28 ms
+              · POST /api/commit        pay-worker-settlement HTTP +493 ms 26 ms
+                ▸ POST /api/commit      shared-api-inventory    +495 ms    22 ms
+                  · SQL: UPDATE ...     shared-api-inventory SQL +498 ms   15 ms
+```
+
+Three things are worth saying out loud when this is on screen:
+
+- **Nothing extra was instrumented to make this work.** The services propagate W3C trace
+  context, so every span already carries its own id and its parent's. The tree is that
+  structure read back out — one `union`, one self-referencing hierarchy.
+- **The database calls are in the tree, not beside it.** "End to end including database calls"
+  is not a separate feature; a SQL span is just a span with a different `DependencyType`.
+- **The async hop is still connected.** `pay-worker-settlement` runs *after* the HTTP response
+  went back to the user — note the +459 ms offset against a 383 ms root — and it still lands
+  in the same trace, because the Service Bus message carried the trace context with it.
+
+Select a **Payments** failure and the trace still resolves all the way back to `retail-web`.
+That is deliberate: the trace is fetched by operation, not by service, so a domain team sees
+the whole customer journey their failure sits inside, not just their own slice of it.
+
+Below the tree, any exceptions raised anywhere in the same transaction are listed separately.
+They are kept out of the tree on purpose — an exception is an event *on* a span, not a span,
+and forcing it into the hierarchy would mean inventing a parent for it.
+
+Two links sit on each failure row. **Details** attempts to open the native Application Insights
+transaction view for that item, and **App Insights** opens the owning component — useful when
+you want to hand off to a team's own resource and its per-resource Application Map.
+
+---
+
 ## Keeping the catalog current
 
-The catalog is published to Log Analytics in two forms, because they answer different
-questions. `sync-catalog.mjs` writes both:
-
-| | `AppCatalog` (saved function) | `AppCatalog_CL` (custom table) |
-|---|---|---|
-| What it is | ARM metadata — a saved function whose body is a `datatable()` | Log data, via the Logs Ingestion API |
-| Retention | **None. Never ages out.** | Subject to retention (730 days interactive, max) |
-| Answers | What is true *now* | What was true *then* |
-| Deletion | Implicit — the row is just absent after a replace | Explicit tombstone row |
-| Use it for | Every join. This is the reference table. | History and audit |
+The catalog is published to Log Analytics as a **single saved function**, `AppCatalog`.
+`sync-catalog.mjs` writes it:
 
 ```bash
-node sync-catalog.mjs --target both        # after editing catalog/catalog.json
-node sync-catalog.mjs --target both --full # rewrite everything, skip delta detection
+node sync-catalog.mjs        # after editing catalog/catalog.json
 ```
+
+That function is ARM metadata, not log data — and the distinction is the whole reason it was
+chosen:
+
+| | `AppCatalog` (saved function) |
+|---|---|
+| What it is | ARM metadata — a saved function whose body is a `datatable()` |
+| Retention | **None. It never ages out.** |
+| Answers | What is true *now* |
+| Deletion | Implicit — the row is simply absent after a replace |
+| Canonical query | `AppCatalog` |
+
+Because it has no `TimeGenerated` and no retention, nothing can silently age out and **no
+keep-alive feeder has to exist** to stop entries being dropped. Deletion needs no tombstone
+and no `arg_max()`: publishing replaces the whole body, so omitting a row removes it.
 
 It is source-agnostic — it consumes a JSON array, so pulling from SQL Server is a pipe:
 
 ```bash
 sqlcmd -S <server> -d <db> -G -C -h -1 -W \
   -Q "SET NOCOUNT ON; SELECT * FROM dbo.ServiceCatalog FOR JSON PATH" > rows.json
-node sync-catalog.mjs --from rows.json --target both
+node sync-catalog.mjs --from rows.json
 ```
 
 Point a timer-triggered Function or a nightly pipeline at that and the catalog stays current
 on its own.
 
-### Why the table needs two extra columns
+### One copy, on purpose
 
-A custom table is **append-only** — no `UPDATE`, no `DELETE`. So "the catalog" is not the set
-of rows, it is *the newest row per workload*. Two bookkeeping columns make that work:
+Every workbook tile joins this one function. Nothing inlines the catalog.
 
-- **`isActive`** — `false` marks a tombstone. This is the one that is easy to miss: without
-  it, deleting a service from the source is invisible, because `arg_max()` keeps returning
-  its last known row forever and the retired service haunts the portfolio permanently. The
-  sync detects disappearances and writes an explicit tombstone.
-- **`rowHash`** — a content hash. Only changed rows are written, so the table is a real
-  change log rather than eight identical rows every night. Re-running the sync with no source
-  changes writes nothing at all.
+That is a deliberate correction. The workbook used to carry its own `datatable()` copies —
+and they had already drifted: the Portfolio copy spelled criticality `tier1` while the domain
+rollup copy spelled it `tier-1`, two versions of the same field in the same generated file,
+with nothing to flag the mismatch.
 
-Which makes the canonical query:
+### The limit, and the trade-off
 
-```kusto
-AppCatalog_CL
-| summarize arg_max(TimeGenerated, *) by workload
-| where isActive
-```
+A saved function travels in one ARM request body, which is capped near 1 MB. At roughly
+480 bytes per entry that lands around **2,000 services**; `sync-catalog.mjs` refuses above a
+conservative 700 KB rather than failing mid-publish. Note the ceiling applies to *publishing*,
+not to querying.
 
-`queries/catalog-current.kql` has this plus point-in-time and change-history variants.
+The real trade-off is time, not size: **a function only knows *now***. It cannot answer "who
+owned this service on the day of the incident?" If point-in-time history becomes a genuine
+requirement, the answer is a custom log table fed by the Logs Ingestion API — added
+deliberately, as a second component with its own defined role, rather than as a duplicate of
+this one.
 
-> **Gotcha worth knowing.** Adding a column to a custom table that already exists does not
-> work. The `PUT` succeeds, ARM reports the new column, `getschema` lists it — and the
-> ingestion pipeline silently drops that field on every subsequent row, with no error
+> **Gotcha, if you ever do add that table.** Adding a column to a custom table that already
+> exists does not work. The `PUT` succeeds, ARM reports the new column, `getschema` lists it —
+> and the ingestion pipeline silently drops that field on every subsequent row, with no error
 > anywhere. You have to delete the table and recreate it with the full schema. Deleting a
 > table is a schema operation; it does not remove rows already ingested.
 
@@ -644,6 +731,13 @@ match reality?*
 
 To watch it work, add a fake entry to `catalog.json`, re-run `build-workbook.mjs` and
 `deploy.sh`, and it will appear as orange within a minute.
+
+**This tab deliberately ignores the Domain filter for uncatalogued services.** An uncatalogued
+service has no domain and no tier — it is not in the catalog, that is the whole finding — so
+filtering on domain would delete exactly the rows the tab exists to surface, and leave it
+looking reassuringly clean. Catalogued rows filter normally; shadow services always show.
+Verified: with `Domain = Payments` selected, a Retail service missing from the catalog still
+appears.
 
 This drift check is the difference between a portfolio that is trusted and one that quietly
 rots. Run it on a schedule.
@@ -752,15 +846,14 @@ works for traces and logs, and the full attribute-to-table mapping — see
 ```
 demo/
   README.md               This file — setup, options, and the guided tour
-  deploy.sh               RG + workspace + 8 App Insights + catalog table + workbook
+  deploy.sh               RG + workspace + 8 App Insights + catalog + workbook
   teardown.sh             Single-command cleanup
   build-workbook.mjs      Generates workbook-portfolio.json (run after editing tiles)
-  sync-catalog.mjs        Publishes the catalog to Log Analytics (function + table)
+  sync-catalog.mjs        Publishes the catalog to Log Analytics as the AppCatalog function
   workbook-portfolio.json ARM template (generated)
   catalog/catalog.json    Service catalog — the hand-authored source of truth
   queries/*.kql           Cross-resource portfolio queries
     estate-map.kql        Holistic dependency graph (nodes + edges) for the Estate map tab
-    catalog-current.kql   Current state, point-in-time, and change history
   simulator/              .NET console app: topology, flows, scenarios
     ARCHITECTURE.md       How the simulator is built and how data flows through it
 ```
@@ -781,6 +874,20 @@ The estate map's KQL lives in `queries/estate-map.kql` rather than inside the ge
 you can paste it straight into the Logs blade to iterate on it. `build-workbook.mjs` reads
 that file at build time — there is one copy, not two.
 
+That file now carries three workbook parameter tokens rather than one. To run it directly in
+the Logs blade, replace `{TimeRange}` with a predicate such as `> ago(24h)`, and `{Domain}`
+and `{Tier}` with either nothing (no filter) or a quoted list like `'Retail','Payments'`.
+
+### Filters are per-query, not global
+
+A workbook parameter does nothing on its own. Adding `Domain` to the parameters block and
+forgetting to thread it into one of the `.kql` strings produces the worst possible outcome:
+the dropdown appears, the user selects a value, the tile refreshes, and **the numbers do not
+change**. There is no error. Every filterable query in `build-workbook.mjs` starts from the
+shared `filterPrelude` constant for this reason, and `.validate-queries.mjs`-style checking
+should always run each tile under several selections and compare row counts, not just check
+that the query parses.
+
 ## Gotchas worth carrying home
 
 | Gotcha | Why it matters |
@@ -796,6 +903,10 @@ that file at build time — there is one copy, not two.
 | The workbook graph allows **one tooltip string per content slot**. | Compose the whole hover card as a column in KQL and reference it as `["ColumnName"]`. |
 | Force-directed graph layout re-seeds on every refresh. | Use `graphOrientation: 1` (flow) for anything you intend to demo or screenshot. |
 | Workbook `GET` returns an empty `serializedData`. | Append `&canFetchContent=true` to the ARM URL, or you will think your deployment shipped an empty workbook. |
+| **Filtering a topology graph by exclusion is silently wrong.** | Removing non-matching nodes also removes cross-domain callers, and the graph still renders. Filter a graph by *focus* — keep neighbours, gray them out. |
+| A tree grid needs `hierarchySettings` **inside** `gridSettings`, and `treeType: 0` for Parent/Child. | `treeType: 1` is Group By, which generates its own grouping rows and cannot show real aggregates on them. |
+| `AppRequests.ItemId` does not exist; the column is **`_ItemId`**, and `getschema` does not list it. | Same for `_ResourceId`. Both are selectable and survive a `join`. |
+| A root request's `ParentId` is its **`OperationId`**, not empty. | Left alone it points at a non-existent span and a tree grid has nothing to root. Rewrite unresolvable parents to `""`. |
 
 ## Known environment quirks
 

@@ -6,7 +6,7 @@
 #   * 1 resource group          (the entire blast radius — teardown.sh deletes it wholesale)
 #   * 1 Log Analytics workspace (deliberately ONE — see doc 02)
 #   * 8 workspace-based Application Insights resources, tagged with the doc 05 taxonomy
-#   * 1 catalog reference table (AppCatalog saved function + AppCatalog_CL custom table)
+#   * 1 catalog reference surface (AppCatalog saved function)
 #   * 1 portfolio Workbook      (deployed via ARM — the supported path)
 #
 # Cost: Azure Monitor bills on ingestion, not on resource existence. At demo volume this
@@ -96,106 +96,21 @@ for entry in "${ESTATE[@]}"; do
   ok "$app  [$domain/$criticality]"
 done
 
-say "Creating catalog reference table"
-# The service catalog needs to be joinable from KQL. Two homes, because they answer
-# different questions and have different persistence characteristics:
+# The service catalog is published as a workspace saved function aliased AppCatalog.
+# That is ARM metadata, not log data: it has no retention and no TimeGenerated, so it
+# never ages out and nothing has to keep re-feeding it. sync-catalog.mjs (below) both
+# creates and updates it, so there is no infrastructure to provision here.
 #
-#   AppCatalog     — a workspace saved function (ARM metadata, NOT log data). No
-#                    retention, so it never ages out. Always current state. This is
-#                    the one the workbook joins against.
-#   AppCatalog_CL  — a custom log table fed by the Logs Ingestion API. This IS log
-#                    data and DOES age out (730d interactive max), so it only
-#                    survives while sync-catalog.mjs keeps running. Its value is
-#                    history: "who owned this service on the day of the incident?"
-#
-# Both are populated by sync-catalog.mjs. Only the table needs infrastructure.
-CATALOG_COLS="workload displayName domain criticality owner businessOwner description appUrl docsUrl runbookUrl repoUrl slo onCall"
-
-# Business columns are strings; the three bookkeeping columns are what make an
-# append-only table behave like a reference table. See sync-catalog.mjs for why each
-# exists -- isActive in particular, without which a deleted service can never be
-# expressed and haunts the portfolio forever.
-COLS_JSON=$(for c in $CATALOG_COLS; do printf '{"name":"%s","type":"string"},' "$c"; done)
-COLS_JSON="{\"name\":\"TimeGenerated\",\"type\":\"datetime\"},${COLS_JSON}{\"name\":\"isActive\",\"type\":\"boolean\"},{\"name\":\"rowHash\",\"type\":\"string\"},{\"name\":\"syncId\",\"type\":\"string\"}"
-
-# Request bodies go in the script directory, not mktemp. Under Git Bash, mktemp returns
-# an MSYS path (/tmp/...) that the native Windows az.exe cannot open; az then falls back
-# to parsing the literal string "@/tmp/..." as JSON and fails with a confusing
-# "Unexpected character encountered while parsing value: @".
-TBL_BODY="$(dirname "$0")/.catalog-table.json"
-DCR_BODY="$(dirname "$0")/.catalog-dcr.json"
-trap 'rm -f "$TBL_BODY" "$DCR_BODY"' EXIT
-
-# Both retention values are sent. Setting only totalRetentionInDays fails when the table
-# already exists with a longer interactive retention ("The specified total retention 30
-# is smaller than the retention 730"), which would make re-running this script fail.
-#
-# WARNING: adding a column to a custom table that already exists does NOT work as you
-# would expect. The PUT succeeds, ARM reports the new column, and getschema lists it --
-# but the ingestion pipeline keeps dropping that field silently, so every row lands with
-# the column empty and no error anywhere. The only fix is to DELETE the table and
-# recreate it with the full schema:
-#
-#   az rest --method delete --url "https://management.azure.com${WS_ID}/tables/AppCatalog_CL?api-version=2022-10-01"
-#
-# Deleting the table is a schema operation and does not remove already-ingested rows.
-# After recreating, re-run: node sync-catalog.mjs --target table --full
-cat > "$TBL_BODY" <<EOF
-{"properties":{"retentionInDays":${RETENTION_DAYS},"totalRetentionInDays":${RETENTION_DAYS},"schema":{"name":"AppCatalog_CL","columns":[${COLS_JSON}]}}}
-EOF
-
-az rest --method put \
-  --url "https://management.azure.com${WS_ID}/tables/AppCatalog_CL?api-version=2022-10-01" \
-  --body "@$TBL_BODY" --headers "Content-Type=application/json" \
-  --only-show-errors >/dev/null
-ok "table AppCatalog_CL (retention ${RETENTION_DAYS}d)"
-
-# kind:"Direct" gives the DCR its own logsIngestion endpoint. A separate Data Collection
-# Endpoint resource has not been required since March 2024.
-DCR_BODY="$(dirname "$0")/.catalog-dcr.json"
-cat > "$DCR_BODY" <<EOF
-{
-  "location": "${LOCATION}",
-  "kind": "Direct",
-  "properties": {
-    "streamDeclarations": { "Custom-AppCatalog_CL": { "columns": [${COLS_JSON}] } },
-    "destinations": { "logAnalytics": [ { "workspaceResourceId": "${WS_ID}", "name": "laDest" } ] },
-    "dataFlows": [ {
-      "streams": ["Custom-AppCatalog_CL"],
-      "destinations": ["laDest"],
-      "transformKql": "source",
-      "outputStream": "Custom-AppCatalog_CL"
-    } ]
-  }
-}
-EOF
-
-DCR_ID=$(az rest --method put \
-  --url "https://management.azure.com/subscriptions/${SUB_ID}/resourceGroups/${RG}/providers/Microsoft.Insights/dataCollectionRules/dcr-appcatalog?api-version=2023-03-11" \
-  --body "@$DCR_BODY" --headers "Content-Type=application/json" \
-  --only-show-errors --query id -o tsv)
-ok "dcr-appcatalog"
-
-# Publishing to the table requires Monitoring Metrics Publisher on the DCR. Role
-# assignment is eventually consistent, so a first sync immediately after deploy can
-# still 403; sync-catalog.mjs is safe to re-run.
-CALLER_OID=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || true)
-if [[ -n "$CALLER_OID" ]]; then
-  az role assignment create \
-    --assignee-object-id "$CALLER_OID" --assignee-principal-type User \
-    --role "Monitoring Metrics Publisher" --scope "$DCR_ID" \
-    --only-show-errors >/dev/null 2>&1 || true
-  ok "Monitoring Metrics Publisher granted on DCR"
-fi
-
-echo "DEMO_DCR_NAME=dcr-appcatalog" >> "$ENV_FILE"
+# The trade-off is that a function knows only *now* -- it cannot answer "who owned this
+# service on the day of the incident?". If point-in-time history is ever needed, add a
+# custom log table fed by the Logs Ingestion API as a deliberate second component.
 
 say "Publishing service catalog"
 if command -v node >/dev/null 2>&1; then
-  ( cd "$(dirname "$0")" && node sync-catalog.mjs --target both \
+  ( cd "$(dirname "$0")" && node sync-catalog.mjs \
       --rg "$RG" --workspace "$WORKSPACE" --subscription "$SUB_ID" ) | sed 's/^/    /'
 else
-  echo "    node not found — run 'node sync-catalog.mjs --target both' once available"
+  echo "    node not found — run 'node sync-catalog.mjs' once available"
 fi
 
 say "Deploying portfolio workbook"
@@ -224,10 +139,10 @@ cat <<EOF
     Resource group : $RG
     Workspace      : $WORKSPACE
     App Insights   : ${#ESTATE[@]} resources
-    Catalog        : AppCatalog (function) + AppCatalog_CL (table)
+    Catalog        : AppCatalog (saved function)
     Connection strings written to: $ENV_FILE
 
     Next:  cd simulator && dotnet run -- --backfill-hours 24
-    Catalog refresh: node sync-catalog.mjs --target both
+    Catalog refresh: node sync-catalog.mjs
     Clean: ./teardown.sh
 EOF
