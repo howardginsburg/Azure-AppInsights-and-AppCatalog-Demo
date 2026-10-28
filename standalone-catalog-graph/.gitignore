@@ -1,0 +1,17 @@
+# Build outputs
+dist/
+dist-server/
+node_modules/
+
+# Local env / secrets
+.env
+.env.local
+*.local
+
+# Deploy artifacts
+*.zip
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db

@@ -19,7 +19,6 @@
 *.csproj text
 
 # Binary — never diff, never normalize.
-*.pptx  binary
 *.png   binary
 *.jpg   binary
 *.pdf   binary

@@ -1,0 +1,45 @@
+// Workbook-only part of the estate map. build-workbook.mjs appends it to the shared topology
+// query (standalone-catalog-graph/server/estate.kql, which defines `nodes` and `links`), after
+// the tag lookup (`appTags`) and the filter parameters (`selDomain`, `selTier`).
+//
+// Classification comes from the Azure tags on each service's Application Insights resource.
+let classified =
+    nodes
+    | extend tg = appTags[ResourceId]
+    | extend Domain = case(Kind != "service", "shared infrastructure",
+                           isempty(tostring(tg.domain)), "untagged",
+                           tostring(tg.domain)),
+             Owner = iff(isempty(tostring(tg.owner)), "n/a", tostring(tg.owner)),
+             Tier = iff(isempty(tostring(tg.criticality)), "n/a", tostring(tg.criticality))
+    | extend Name = Id
+    // The graph shows one tooltip string per node, so the whole hover card is built here.
+    | extend Hover = strcat(
+        Name, "  [", Kind, "]",
+        "\ndomain: ", Domain,
+        "\nowner: ", Owner, "   criticality: ", Tier,
+        "\ncalls: ", Calls, "   failures: ", Fails, " (", FailPct, "%)",
+        "\nP95: ", P95, " ms");
+// FOCUS, NOT EXCLUDE. On a list, a filter removes rows. On a graph that is quietly wrong:
+// selecting Payments would delete the Retail caller of a shared service, and the map would
+// still render, just missing the cross-domain fan-in that matters most. So the selection
+// picks a focus set, and the map keeps it plus everything one hop away, drawn gray as context.
+let noFilter = array_length(selDomain) == 0 and array_length(selTier) == 0;
+let focusIds = toscalar(
+    classified
+    | where Kind == "service"
+    | where (array_length(selDomain) == 0 or Domain in (selDomain))
+        and (array_length(selTier) == 0 or Tier in (selTier))
+    | summarize make_set(Id));
+let neighbourIds = toscalar(
+    links
+    | where SourceId in (focusIds) or TargetId in (focusIds)
+    | mv-expand nid = pack_array(SourceId, TargetId) to typeof(string)
+    | summarize make_set(nid));
+let keep = set_union(focusIds, neighbourIds);
+classified
+| where noFilter or Id in (keep)
+| extend Status = iff(noFilter or set_has_element(focusIds, Id), Status, "Context")
+| extend Hover = iff(noFilter or set_has_element(focusIds, Id), Hover,
+                     strcat(Hover, "\n\n(context: outside the current filter)"))
+| project Id, Name, Kind, Domain, Owner, Tier, Calls, Fails, FailPct, P95, Status, Hover
+| union (links | where noFilter or (SourceId in (keep) and TargetId in (keep)))

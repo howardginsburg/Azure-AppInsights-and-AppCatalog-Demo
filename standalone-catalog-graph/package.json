@@ -1,0 +1,42 @@
+{
+  "name": "standalone-catalog-graph",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Estate Atlas: live dependency graph from Log Analytics, classified by Application Insights tags, with an Azure SQL catalog of business context. Managed identity only.",
+  "engines": {
+    "node": "^24.22.1"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n web,api -c cyan,magenta \"npm:dev:web\" \"npm:dev:api\"",
+    "dev:web": "vite",
+    "dev:api": "tsx watch --env-file-if-exists=.env server/index.ts",
+    "build": "npm run typecheck && vite build && vite build -c vite.server.config.ts",
+    "start": "node --enable-source-maps dist-server/server/index.js",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.14.0",
+    "express": "^5.3.0",
+    "mssql": "^12.7.10",
+    "semver": "^7.8.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/mssql": "^12.3.0",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/semver": "^7.8.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "cytoscape": "^3.34.4",
+    "cytoscape-fcose": "^2.2.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

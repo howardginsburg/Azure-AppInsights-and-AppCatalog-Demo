@@ -21,7 +21,7 @@ public static class Flows
 
     // Realistic, valid, parameterized statements — what Microsoft.Data.SqlClient would
     // actually report. Parameter placeholders stand in for values that must never be
-    // allowed to reach telemetry (doc 03).
+    // allowed to reach telemetry.
     //
     // Two behaviours of the current instrumentation are modelled here deliberately:
     //   1. OpenTelemetry.Instrumentation.SqlClient 1.12.0-beta.3+ REMOVED SetDbStatementForText,
@@ -87,8 +87,8 @@ public static class Flows
     {
         // Current stable OTel database semantic conventions only. `microsoft.sql_server` is
         // in the exporter's s_dbSystems set, so DependencyType still resolves to "SQL".
-        // Statements are valid and parameterized on purpose: doc 03's redaction rule says
-        // literal values must never reach telemetry, so the demo models that rather than violating it.
+        // Statements are valid and parameterized on purpose: literal values must never reach
+        // telemetry, so the demo models that rather than violating it.
         var n = Node(service, $"{operation} {table}", ActivityKind.Client, start, duration);
         n.Tag("db.system.name", "microsoft.sql_server")
          .Tag("db.namespace", db)

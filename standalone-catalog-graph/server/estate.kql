@@ -1,0 +1,70 @@
+// Estate topology, shared by the catalog app (server/estate.ts) and the portfolio workbook
+// (workbook/build-workbook.mjs). Edit it here; both read this file.
+//
+// Defines two tables and leaves the final expression to each consumer:
+//   nodes  one row per service (from requests) and per backing service (from dependencies)
+//   links  one row per caller -> callee pair
+//
+// {TimeRange} is the workbook's time parameter. The catalog app replaces it with "> ago(<n>h)".
+//
+// How edges are derived: a caller records a dependency with Id = X, and the callee's request
+// carries ParentId = X. Joining on that gives a true service-to-service edge. A dependency with
+// no matching request (sampling, or the callee's telemetry falling outside the time range) falls
+// back to its HTTP host name, resolved to a known service name where possible. Only HTTP gets
+// that treatment, so distinct databases keep distinct nodes.
+//
+// ResourceId is the Application Insights resource that received a service's telemetry. Its
+// Azure tags (domain, criticality, owner) classify the service.
+let roles = toscalar(AppRequests | where TimeGenerated {TimeRange} | summarize make_set(AppRoleName));
+let depsResolved =
+    AppDependencies
+    | where TimeGenerated {TimeRange}
+    | project depId = Id, src = AppRoleName, Target, DependencyType, DurationMs, Success
+    | join kind=leftouter (
+        AppRequests | where TimeGenerated {TimeRange} | project depId = ParentId, dstRole = AppRoleName
+      ) on depId
+    | extend httpRole = iff(DependencyType == "HTTP",
+        tostring(split(tostring(split(tostring(split(Target, "/")[0]), ":")[0]), ".")[0]), "")
+    | extend isSvc = isnotempty(dstRole) or httpRole in (roles)
+    // SQL and Cosmos DB targets look like "host:port | DbName"; the database name is the useful label.
+    | extend dbName = tostring(split(Target, "| ")[1])
+    | extend tgt = case(
+        isnotempty(dstRole), dstRole,
+        httpRole in (roles), httpRole,
+        isnotempty(dbName),  dbName,
+        tostring(split(tostring(split(Target, "/")[0]), ":")[0]))
+    | extend tgtKind = case(
+        isSvc, "service",
+        DependencyType in ("SQL", "mysql", "postgresql"), "database",
+        DependencyType in ("cosmosdb", "redis", "Azure blob", "Azure table"), "datastore",
+        DependencyType in ("servicebus", "Queue Message", "eventhub"), "queue",
+        "external");
+let nodes =
+    union
+      (AppRequests
+       | where TimeGenerated {TimeRange}
+       | summarize Calls = count(), Fails = countif(Success == false),
+                   P95 = round(percentile(DurationMs, 95), 0),
+                   ResourceId = take_any(tolower(_ResourceId))
+         by Id = AppRoleName
+       | extend Kind = "service"),
+      (depsResolved
+       | where not(isSvc)
+       | summarize Calls = count(), Fails = countif(Success == false),
+                   P95 = round(percentile(DurationMs, 95), 0)
+         by Id = tgt, Kind = tgtKind
+       | extend ResourceId = "")
+    | extend FailPct = iff(Calls == 0, 0.0, round(100.0 * Fails / Calls, 2))
+    | extend Status = case(
+        Kind != "service", "Infra",
+        FailPct >= 5.0,    "Error",
+        FailPct >= 1.0,    "Warning",
+                           "Healthy")
+    | project Id, Kind, ResourceId, Calls, Fails, FailPct, P95, Status;
+let links =
+    depsResolved
+    | summarize Calls = count(), Fails = countif(Success == false)
+        by SourceId = src, TargetId = tgt, DependencyType
+    | extend EdgeLabel = iff(Fails > 0, strcat(DependencyType, "  ", Calls, "  (", Fails, " failed)"),
+                                        strcat(DependencyType, "  ", Calls))
+    | project SourceId, TargetId, Calls, EdgeLabel;

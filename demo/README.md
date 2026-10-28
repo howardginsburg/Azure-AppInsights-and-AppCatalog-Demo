@@ -1,924 +1,235 @@
-# Observability Demo
+# Demo: eight simulated apps on a real Azure platform
 
-A disposable Azure estate that makes the architecture in this repository tangible: real
-Application Maps, real end-to-end transactions including database calls, a real portfolio
-workbook, and a real service catalog — driven entirely by a **synthetic telemetry
-simulator**, with no application services deployed.
-
-Eight Application Insights resources, one Log Analytics workspace, three business domains,
-and one console process pretending to be eight microservices. Azure cannot tell the
-difference.
+The demo brings the starter to life without running a single real service. Eight apps are registered, each with its own tagged Application Insights resource. One console process, the simulator, emits the telemetry those apps would produce: correlated traces, database and queue calls, logs, exceptions, and three injected incidents.
 
 | | |
 |---|---|
-| **Time to first map** | ~10 minutes (3 to deploy, 2 to generate, 5 to ingest) |
-| **Cost** | Effectively zero — see [below](#cost-and-teardown-first) |
-| **Teardown** | `./teardown.sh` |
+| **Workloads** | Eight simulated app identities; no real workload services, databases, or queues |
+| **Telemetry volume** | A default backfill produces roughly 12,000 spans; the exact count depends on the run |
+| **Platform cost** | The catalog's App Service, SQL database, and private endpoint are real, billable resources. See [cost and clean-up](../README.md#cost-and-clean-up) |
+| **Clean up** | `./teardown.sh` from the repository root |
 
-**Jump to:** [Get it running](#part-1--get-it-running) ·
-[Simulator options](#simulator-options) · [Guided tour](#part-3--guided-tour) ·
-[Reference](#part-4--reference)
+The OpenTelemetry SDK, Azure Monitor exporter, ingestion pipeline, and visualization are real. The workload events, timings, errors, and propagation are authored in one process. This demonstrates how correctly shaped telemetry is assembled; it does not test real HTTP, database, or broker integrations.
 
----
+| File | What it is |
+|---|---|
+| [`apps.bicep`](apps.bicep) | The eight apps and their `domain`, `criticality`, and `owner` tags |
+| [`catalog-seed.json`](catalog-seed.json) | Their business context, loaded into the catalog |
+| [`setup.sh`](setup.sh) | Registers the apps, writes `demo/.env`, loads the catalog. `deploy.sh` runs it |
+| [`simulator/`](simulator/) | The .NET telemetry generator. See [how it works](simulator/ARCHITECTURE.md) |
 
-# Part 1 — Get it running
+## Run it
 
-## Cost and teardown, first
-
-Eight Application Insights resources and a Log Analytics workspace cost **nothing at rest** —
-Azure Monitor bills on ingestion, and a 24-hour backfill (~12,000 spans) sits inside the
-workspace free grant. Live mode at the default rate adds roughly 40,000 spans/hour, still
-inside the grant. Controls in place:
-
-- `deploy.sh` sets a **1 GB/day cap** on the workspace as a cost fuse
-- Everything lives in **one resource group**
-- The simulator runs bounded by default; live mode is opt-in
+Use Bash at the repository root after the [quick-start setup](../README.md#quick-start), including the selected subscription and exported `RG` and `LOCATION`:
 
 ```bash
-./teardown.sh     # deletes the resource group; force-purges workspaces
+./deploy.sh
 ```
 
-Delete it when you are done anyway. A demo you cannot delete confidently is a demo that
-quietly bills.
+This deploys the platform, then runs `demo/setup.sh`. That registers the eight apps, writes their connection strings to `demo/.env` (gitignored), and loads `catalog-seed.json` into the catalog.
 
-## Prerequisites
+The generated environment file belongs to the most recent demo setup in this checkout. Changing `RG` in a shell does not change those connection strings. Before switching environments, run setup for the intended group or use a separate checkout.
 
-| Tool | Why | Check |
-|---|---|---|
-| **Azure CLI**, logged in with a subscription selected | Creates every resource | `az account show` |
-| **.NET 10 SDK** | Builds and runs the simulator | `dotnet --version` |
-| **bash** — WSL or Git Bash on Windows | `deploy.sh` / `teardown.sh` | `bash --version` |
-| **Node.js** *(optional)* | Only needed if you edit the workbook | `node --version` |
+> [!WARNING]
+> The simulator intentionally emits failures. Azure can create [Failure Anomalies](https://learn.microsoft.com/azure/azure-monitor/alerts/proactive-failure-diagnostics) rules and attach a subscription's existing Smart Detection action group. Review or disable the demo resources' rules before sending synthetic failures in a shared subscription; default notifications can reach Monitoring Reader and Monitoring Contributor role members.
 
-You need permission to create resource groups and Application Insights resources in the
-target subscription. Nothing else — no Owner, no policy exemptions.
-
-## Step 1 — Deploy the estate
+Generate 24 hours of history:
 
 ```bash
-cd demo
-./deploy.sh          # ~3 minutes
+(cd demo/simulator && dotnet run -c Release -- --backfill-hours 24)
 ```
 
-This creates the resource group, the Log Analytics workspace, 8 tagged Application Insights
-resources, the daily cap, and the portfolio workbook — then writes **`demo/.env`** containing
-the 8 connection strings the simulator reads.
+The subshell leaves you at the repository root. Allow for ingestion after the simulator exits; Application Map also needs time to discover components. The simulator prints the generated counts, not a guarantee that every row has already become queryable.
 
-The script is idempotent: re-running it updates in place rather than duplicating. The
-workbook uses a deterministic GUID for exactly this reason.
+Application Insights ingestion rejects telemetry older than 48 hours, so the simulator refuses more than 47.
 
-## Step 2 — Generate history
+To send current-time telemetry without another historical backfill, use live mode in a second Bash terminal at the repository root:
 
 ```bash
-cd simulator
-dotnet run -c Release -- --backfill-hours 24
+(cd demo/simulator && dotnet run -c Release -- --backfill-hours 0 --live)
 ```
 
-Takes ~2 minutes and emits ~12,000 spans across 24 hours of simulated history, including
-three injected incidents you can investigate.
+Live-mode telemetry is retained normally. Stop with Ctrl+C. This is different from the **Live Metrics** collector; see [stop 10](#10-watch-it-live).
 
-Then **wait about five minutes.** Backfilled telemetry needs 2–5 minutes to become
-queryable, and Application Map needs a little longer to finish component discovery. This is
-normal ingestion latency, not a broken deployment.
+### Check it worked
 
-> **Why 24 hours and not a week?** Application Insights ingestion **rejects any telemetry
-> older than 48 hours**. The simulator refuses more than 47 to stay clear of the edge.
-
-## Step 3 — Leave it running during the demo *(recommended)*
-
-```bash
-dotnet run -c Release -- --backfill-hours 0 --live
-```
-
-Backfill gives you *history* to investigate. Live mode makes the estate **move while you
-talk** — the map redraws, charts extend to the right, transaction search fills from the top,
-and **Live Metrics works at all**, which it cannot do against back-dated data.
-
-`--backfill-hours 0` means "add nothing to history, just start emitting now", so this is safe
-to run against an estate that already has its 24 hours. Run it in a second terminal and leave
-it up. Stop with Ctrl+C.
-
-To do both in one command on a fresh estate:
-
-```bash
-dotnet run -c Release -- --backfill-hours 24 --live
-```
-
-**Running it unattended.** Live mode is bounded by `--live-minutes` and otherwise runs until
-Ctrl+C. To leave it going in the background and keep the console output:
-
-```bash
-# bash
-dotnet run -c Release -- --backfill-hours 0 --live-minutes 240 > ../live-simulator.log 2>&1 &
-tail -f ../live-simulator.log
-```
-
-```powershell
-# PowerShell — run the built dll directly so there is no wrapper process in the way
-dotnet "bin\Release\net10.0\obsdemo-simulator.dll" --backfill-hours 0 --live-minutes 240 *> "..\live-simulator.log"
-```
-
-Stop it with `Stop-Process -Id <pid>` on Windows, or `kill %1` in bash.
-
-## Step 4 — Confirm it worked
-
-Open **Logs** on the `log-obsdemo` workspace and run:
+In **Logs** on the workspace that `deploy.sh` created, run:
 
 ```kusto
 union AppRequests, AppDependencies, AppTraces, AppExceptions
 | where TimeGenerated > ago(26h)
-| summarize Rows = count(), Services = dcount(AppRoleName) by Type
+| summarize Rows = count(), Apps = dcount(AppRoleName) by Type
 ```
 
-You should see all four tables populated and 8 distinct services. If `AppRequests` is empty,
-give it another two minutes before assuming anything is wrong.
+You should see all four tables. `AppRequests` and `AppDependencies` cover all eight apps; fewer apps appear in `AppTraces` and `AppExceptions` because not every app logs warnings or throws.
 
-| Symptom | Cause |
+In the deployed catalog, verify that the graph has the expected service nodes, tags, catalog entries, and no data-source warning banner. `GET /api/health` proves the process is responding and reports settings presence; it does not test access to SQL, Resource Graph, or telemetry. Check the graph and `GET /api/catalog` as well. Use the URL printed by deployment.
+
+| Symptom | Check before changing anything | Possible next step |
+|---|---|---|
+| No rows | Simulator exit/errors and its `config:` path; destination workspace; query time range; ingestion delay and workspace cap | Correct the target or settings, allow for ingestion, then retry the query. A full redeploy is not the first diagnostic step |
+| Fewer than eight apps | Missing-connection-string errors and whether all eight settings came from the intended demo deployment | From the root with the correct exported `RG`, re-run `./demo/setup.sh`, then the simulator |
+| Application Map is sparse | Whether the request/dependency rows are queryable and the range includes them | Allow component discovery, refresh, or widen the range |
+| Everything is Healthy | Selected incident window, request failure rate, and P95 separately | Follow [stop 1](#1-find-the-incidents); latency alone does not change a failure-rate label |
+| Apps are untagged | Actual Azure tags, workbook viewer access, catalog managed-identity access, and any query errors | Follow [tag-reading limits and permissions](../docs/03-catalog-and-workbook.md#how-the-workbook-reads-tags) |
+| Catalog warning or failed catalog reads | SQL settings, private network/DNS reachability, and SQL authorization | Check the deployed app's logs. A laptop without private access can still develop the graph, as described in [local development](../standalone-catalog-graph/README.md#local-development) |
+
+## Simulator options
+
+| Option | Default | Effect |
+|---|---|---|
+| `--backfill-hours N` | `24` | Hours of history ending now. Maximum 47. `0` skips the backfill |
+| `--traces-per-hour N` | `60` | Backfill density |
+| `--live` | off | Keep sending in real time after the backfill, until Ctrl+C |
+| `--live-minutes N` | unlimited | Stop live mode after N minutes. Implies `--live` |
+| `--live-rate N` | `60` | Live traces per minute. Implies `--live` |
+| `--seed N` | `1337` | Random seed, for repeatable runs |
+| `--dry-run` | off | Build every trace and print the summary without sending anything |
+
+Unknown options are rejected rather than ignored. Incident windows are relative to the backfill run's reference time. A window shorter than 4.5 hours misses the historical incidents; one between 4.5 and 6 hours overlaps part of the inventory incident. Live mode chooses degraded scenarios independently, so its observed failure rate varies.
+
+## The demo flows
+
+| Flow | Share | Path |
+|---|---|---|
+| **checkout** | 45% | `retail-web` → `retail-api-orders`; orders calls inventory and payments. Payments calls an external processor and publishes to Service Bus; settlement processes the message and calls inventory again. SQL calls are leaves on the issuing apps |
+| **browse-catalog** | 35% | `retail-web` → `retail-api-catalog`; the catalog API makes separate Redis and SQL calls |
+| **update-profile** | 20% | `retail-web` → `cust-api-profile`; profile calls Cosmos DB and publishes to Service Bus. `cust-worker-notify` processes the message and calls an external email API |
+
+`shared-api-inventory` is the one to watch. Retail calls it during checkout, and Payments calls it again after settlement, so when it fails, two domains feel it.
+
+## Guided tour
+
+Keep the backfill's run time in mind when choosing ranges: the injected windows age as time passes. Stops 1–6 explain cross-app traces and logs, stops 7–8 connect those observations to the workbook and catalog, and stops 9–10 cover registration and ongoing traffic.
+
+### 1. Find the incidents
+
+Everything interesting happens inside three injected incidents. Find them first:
+
+```kusto
+AppRequests
+| where TimeGenerated > ago(26h)
+| summarize Requests = count(), Failures = countif(Success == false), P95 = round(percentile(DurationMs, 95), 0)
+    by bin(TimeGenerated, 1h), AppRoleName
+| where Failures > 0 or P95 > 1500
+| order by TimeGenerated asc
+```
+
+| Incident | Relative to the backfill run | Signature |
+|---|---|---|
+| Catalog SQL timeouts | 17 to 18 hours ago | `retail-api-catalog` failing, P95 climbing |
+| Payment latency | 10 to 12 hours ago | `pay-api-gateway` P95 of 2 to 3 seconds, with **no** failures |
+| Inventory failures | 4.5 to 6 hours ago | `shared-api-inventory` failing, in two domains |
+
+The payment incident has no failures at all. An app can be up by every availability measure and still ruin the customer's experience.
+
+### 2. One map, eight resources
+
+Open the `appi-retail-web` resource, then **Application Map**. It draws apps you didn't open, because every one of them is in the same transactions. Databases and queues are nodes too, and two external APIs appear with no server side: that's exactly where instrumentation stops.
+
+Set the time range to the inventory incident. Look for failures on `shared-api-inventory` and calls from both Retail and Payments; portal coloring depends on the chosen range and view.
+
+### 3. One transaction, five resources
+
+From the map, select `shared-api-inventory`, then **Investigate failures**, and choose a failed **`POST /api/commit`** operation. Alternatively, select a failed **`pay-worker-settlement`** processing request in the workbook's **Transactions** tab. These failures happen after the reservation succeeds, so their transaction includes the web app, orders, inventory, payments, and the settlement worker.
+
+A failed **`POST /api/reserve`** is a different, shorter outcome: checkout stops before payment and settlement. That is expected, not missing telemetry.
+
+Each span exists once, in the resource of the app that produced it. `POST /api/reserve` appears as both the caller's dependency and the callee's request: two spans for the two ends of one call, not duplicate ingestion. [End-to-end correlation](../docs/02-end-to-end-correlation.md#5-read-a-transaction-back) has the query that lists every row with its resource.
+
+![Azure workbook transaction tree showing start offsets, duration bars, failure statuses, and result codes across five apps](../docs/images/azure-workbook-transactions.png)
+
+*This checkout succeeds at the web tier before a later settlement failure. Horizontal and vertical scrolling captures preserve every column and all sixteen spans, including timings, failures, and result codes. Column widths were expanded locally for readability; the saved workbook and telemetry were not changed.*
+
+[Open the full-size transaction image](../docs/images/azure-workbook-transactions.png).
+
+![Exceptions from the same transaction, showing the settlement failure, HTTP error, inventory conflict, and SQL deadlock](../docs/images/azure-workbook-transaction-exceptions.png)
+
+*The same transaction connects the settlement error to the failed inventory commit and SQL deadlock details.* [Open the full-size exception image](../docs/images/azure-workbook-transaction-exceptions.png).
+
+### 4. From failure to root cause
+
+Set the range to the catalog SQL incident. In `appi-retail-api-catalog`, open **Failures**, then **Dependencies**. The failing SQL calls carry result code `-2`, SQL Server's timeout. Deadlocks in the inventory incident carry `1205`. The exception on the request and the failing statement under it are in the same transaction.
+
+### 5. Latency without failure
+
+Set the range to the payment incident. In `appi-pay-api-gateway`, open **Performance**. `POST /api/authorize` sits at 2 to 3 seconds, and almost all of it is the external `POST /v2/charges` call. You can see that you're slow and where, but the fix is somebody else's. The slowness also propagates upstream, so three apps look guilty and only one is.
+
+### 6. Logs in the transaction
+
+```kusto
+AppTraces
+| where TimeGenerated > ago(26h) and SeverityLevel >= 2
+| project TimeGenerated, AppRoleName, SeverityLevel, Message, OperationId
+| order by TimeGenerated desc
+| take 50
+```
+
+Every log line carries its transaction's `OperationId`. In the inventory incident, `shared-api-inventory` logs a deadlock and `retail-api-orders` logs that it's abandoning the checkout: different apps, different resources, one story. `pay-worker-settlement` logs *"Stock commit failed ... after settlement"*, a failure that happens after the customer already got a success response.
+
+### 7. The portfolio workbook
+
+Open the **Workbook** link from `deploy.sh`, or **Monitor** > **Workbooks** > **Application Portfolio**.
+
+- **Portfolio** starts as one row per domain. Expand a domain to see its apps, each with **Open in catalog** and **App Insights** links.
+- **Estate map** draws every app and backing service. Select **Payments** in the Domain filter: the map keeps Payments in color and everything one hop away, including the Retail caller of inventory, in gray.
+- **Transactions** lists every failed request. Select a Payments failure, and the call tree still resolves all the way back to `retail-web`.
+- **Metadata quality** compares registrations with telemetry. Everything is green until you do stop 9.
+
+The domains and owners on every tab come from the deployed resources' Azure tags, initially set by [`apps.bicep`](apps.bicep). Nothing about the demo apps is defined in the workbook.
+
+### 8. The catalog app
+
+Open the **Catalog app** link. The graph is the same estate, drawn from the same topology query.
+
+- Select `shared-api-inventory`. The card shows its tags, its catalog entry (business owner, SLO, on-call), live telemetry, and links.
+- Choose **Edit catalog entry**, change the SLO, and save. The workbook never stored it, so there's nothing to sync.
+- From the workbook's Portfolio tab, choose **Open in catalog** on any app. It opens the catalog with that app selected.
+
+The SLO is descriptive business context; saving it does not change failure-rate health calculations or configure an alert.
+
+### 9. Register an app yourself
+
+From the repository root, using the same subscription and exported `RG` as the platform:
+
+```bash
+./add-app.sh demo-billing-api --domain Finance --criticality tier2 --owner finance-team
+```
+
+After Resource Graph reflects the registration, refresh **Metadata quality** to find `appi-demo-billing-api` with no telemetry, and **Finance** in the Domain filter. Point an instrumented real app at the printed settings and send requests or processing spans to join the graph. To remove just this registration:
+
+```bash
+az resource delete -g "$RG" -n appi-demo-billing-api \
+  --resource-type Microsoft.Insights/components
+```
+
+This does not erase retained telemetry or remove a catalog entry you added. Remove that entry in the catalog UI, and check for a separately retained Failure Anomalies rule for the removed resource.
+
+### 10. Watch it live
+
+Run live mode as described above, then choose a recent range in Application Map or the workbook. In the catalog, select **Last 1h** and choose **Refresh** after ingestion. Newly emitted requests, failures, and logs become visible without another historical backfill.
+
+**Live mode is not Live Metrics.** This simulator configures trace and log exporters only; it does not configure the separate Application Insights Live Metrics collector. A real app with supported distro instrumentation can use that feature. The workbook and catalog remain log-query views, with ingestion delay and explicit refresh rather than instant streaming.
+
+## Gotchas
+
+| Gotcha | Why it matters |
 |---|---|
-| Nothing at all, minutes later | Simulator ran before `deploy.sh` finished writing `.env`, or `.env` was not found — check the `config:` line the simulator prints |
-| Data present, Application Map sparse | Progressive discovery still running. Wait, then refresh |
-| Fewer than 8 services | A connection string is missing from `.env`; re-run `./deploy.sh` |
-| Everything healthy and boring | Your time range is "last 30 minutes". The incidents are 4.5–18h back — see [Stop 0](#stop-0--find-the-incident-windows-first) |
+| The exporter samples by default: rate-limited at five traces per second | A fast backfill would lose most of its traces. The simulator sets `TracesPerSecond = null` and an always-on sampler, in that order |
+| Exporter 1.9 and later save telemetry still queued at shutdown and upload it on a later run | The simulator turns that off so a single run delivers everything |
+| Ingestion rejects telemetry older than 48 hours | The backfill stops at 47 |
+| Pre-aggregated metrics accept only about 20 minutes of back-dating | Backfilled dashboards must query log tables. Every tile in the workbook does |
+| Disposing `ILoggerFactory` is the only way to flush logs | Do it only at shutdown, or logging silently stops |
+| A root request's `ParentId` is its `OperationId`, not empty | Tree views must treat it as top-level |
+| `_ItemId` and `_ResourceId` don't appear in `getschema` | Both can still be selected and joined |
+| Azure can create Failure Anomalies rules for Application Insights resources | Review notifications before emitting synthetic failures; see the [warning before running the simulator](#run-it) |
 
-## Step 5 — Tear it down
+## Clean up
+
+From the repository root, after confirming the subscription and the same exported `RG`:
 
 ```bash
 ./teardown.sh
 ```
 
----
-
-## Simulator options
-
-| Option | Default | What it does |
-|---|---|---|
-| `--backfill-hours N` | `24` | Hours of history ending now. Max 47 — ingestion rejects anything older than 48h. `0` skips backfill entirely. |
-| `--traces-per-hour N` | `60` | Density of the backfill. 60 over 24h is ~12,000 spans. |
-| `--live` | off | After the backfill, keep emitting in real time until Ctrl+C. |
-| `--live-minutes N` | unlimited | Stop live mode automatically after N minutes. |
-| `--live-rate N` | `60` | Live traces per **minute**. 60 = one per second. |
-| `--seed N` | `1337` | RNG seed, for reproducible runs. |
-| `--dry-run` | off | Build every trace and print the full breakdown **without sending anything**. Costs nothing and needs no Azure connection beyond `.env`. |
-| `--help` | | Print all of the above. |
-
-Passing `--live-minutes` or `--live-rate` implies `--live`. Unknown flags are **rejected**
-rather than silently ignored — an ignored `--hours 1` looks like it worked while quietly
-running the 24-hour default.
-
-### Useful combinations
-
-```bash
-# See exactly what would be generated, send nothing
-dotnet run -c Release -- --dry-run
-
-# Small, fast estate for a quick smoke test
-dotnet run -c Release -- --backfill-hours 6 --traces-per-hour 30
-
-# Live only, high rate, for a Live Metrics demo
-dotnet run -c Release -- --backfill-hours 0 --live --live-rate 120
-
-# Bounded live run you can walk away from
-dotnet run -c Release -- --backfill-hours 0 --live-minutes 45
-```
-
-> Incidents are injected at **fixed offsets from now**: 4.5–6h ago, 10–12h ago, 17–18h ago.
-> A short backfill therefore contains no failures — the simulator tells you when that
-> happens and suggests `--backfill-hours 6` or more. Live mode injects its own incidents
-> continuously instead, so roughly 6–8% of live traces fail.
-
-### What the console shows you
-
-Every run prints what is being simulated before it sends anything: the estate grouped by
-domain, the three business flows with their full call paths, which incident windows fall
-inside the backfill, and where the connection strings came from.
-
-The backfill then shows a progress bar with an ETA, followed by a breakdown of traces by
-flow, spans by service and by domain, and a count of backing-service calls by type
-(`microsoft.sql_server`, `servicebus`, `redis`, `cosmosdb`).
-
-Live mode prints **one line per distributed trace** as it is emitted — timestamp, flow, span
-count, duration, and outcome, with the specific incident named on failures:
-
-```
-    time      flow             spans  duration  outcome
-    --------  ---------------  -----  --------  -------------------------
-    12:20:44  checkout            16     301ms  ok
-    12:20:45  update-profile       7      43ms  ok
-    12:20:46  browse-catalog       5    1939ms  FAILED  catalog SQL timeout
-    ----  75 traces | 856 spans | 5 failed (6.7%) | 60/min  ----
-```
-
-This matters during a demo: the console is the ground truth for what *should* be appearing in
-the portal, so you can point at a failed trace and then go find it.
-
----
-
-# Part 2 — What gets deployed
-
-| Thing | Count | Why |
-|---|---|---|
-| Resource group `AppInsightsDemo` | 1 | The entire blast radius, so teardown is one command |
-| Log Analytics workspace `log-obsdemo` | 1 | Demonstrates the single-workspace thesis directly |
-| Application Insights (workspace-based) | 8 | One per workload, tagged with domain/criticality/owner |
-| Portfolio workbook | 1 | Four tabs, joins telemetry to the service catalog |
-
-Eight workloads across three business domains, plus one deliberately **shared** platform
-service consumed by two of them:
-
-| Workload | Domain | Role |
-|---|---|---|
-| `retail-web` | Retail | Storefront BFF |
-| `retail-api-orders` | Retail | Order management |
-| `retail-api-catalog` | Retail | Product catalog |
-| `pay-api-gateway` | Payments | Payment orchestration |
-| `pay-worker-settlement` | Payments | Async settlement worker |
-| `cust-api-profile` | Customer | Profile service |
-| `cust-worker-notify` | Customer | Notification worker |
-| `shared-api-inventory` | Platform | **Called by Retail and Payments** |
-
-Three flows are generated across them:
-
-| Flow | Share | Path |
-|---|---|---|
-| **checkout** | 45% | `retail-web` → `retail-api-orders` → `shared-api-inventory` → SQL → `pay-api-gateway` → *external processor* → Service Bus → `pay-worker-settlement` → SQL → `shared-api-inventory` `/api/commit` |
-| **browse-catalog** | 35% | `retail-web` → `retail-api-catalog` → Redis → SQL |
-| **update-profile** | 20% | `retail-web` → `cust-api-profile` → Cosmos DB → Service Bus → `cust-worker-notify` → *external email API* |
-
----
-
-# Part 3 — Guided tour
-
-A click-through tour of the estate. Roughly 30 minutes end to end. Every stop works against
-telemetry that is **synthetic but structurally identical** to what a real .NET application
-built with today's SDKs produces — the same OpenTelemetry semantic conventions, the same
-Azure Monitor exporter, the same ingestion path.
-
-**Before you start:** complete [Steps 1–3](#step-1--deploy-the-estate) above. Live mode is
-optional, but every stop below is more convincing when the numbers are changing.
-
-## The one-paragraph version
-
-Eight Application Insights resources, one Log Analytics workspace, three business domains.
-Every service writes to its own Application Insights resource, but because they are all
-**workspace-based** and share an `OperationId`, Azure stitches them back into single
-end-to-end transactions. That combination — separate resources for ownership, one workspace
-for correlation — is the architecture this whole repository argues for. The rest of the tour
-is watching it work.
-
----
-
-## Stop 0 — Find the incident windows first
-
-The simulator injects three incidents at fixed offsets from when you ran the backfill.
-Everything interesting happens inside them, so locate them before anything else.
-
-Open **Logs** on the `log-obsdemo` workspace and run:
-
-```kusto
-AppRequests
-| where TimeGenerated > ago(26h)
-| summarize Reqs=count(), Fails=countif(Success == false), P95=round(percentile(DurationMs,95),0)
-    by bin(TimeGenerated, 1h), AppRoleName
-| where Fails > 0 or P95 > 1500
-| order by TimeGenerated asc
-```
-
-You will see three clusters:
-
-| Incident | Roughly | Signature |
-|---|---|---|
-| Catalog SQL timeouts | 17–18h ago | `retail-api-catalog` failing, P95 climbing |
-| Payment latency | 10–12h ago | `pay-api-gateway` P95 ≈ 2–3s, **zero failures** |
-| Inventory failures | 4.5–6h ago | `shared-api-inventory` failing in **two domains** |
-
-Write down the actual timestamps. Several stops below ask you to set the time range to one of
-these windows, and the default "last 30 minutes" will show you a perfectly healthy, perfectly
-boring system.
-
-> The payment incident has **zero failures**. That is deliberate. A service can be entirely
-> "up" by availability metrics and still be ruining the customer experience. If your alerting
-> only watches failure rate, you would never know this happened.
-
----
-
-## Stop 1 — Application Map, and what "shared" really costs
-
-Open **ai-retail-web** → **Application Map**.
-
-Give it a moment; cross-component maps use progressive discovery, so nodes arrive in waves.
-This is expected behaviour, not a slow portal.
-
-What to notice:
-
-1. **The map spans resources you did not open.** You opened `retail-web`, but the map draws
-   `retail-api-orders`, `pay-api-gateway`, `shared-api-inventory`, and more. Each is a
-   separate Application Insights resource. The map is assembled from telemetry, not from
-   configuration — role name is what stitches it.
-2. **Databases and queues are nodes too**, because dependency spans carry the OpenTelemetry
-   `db.*` and `messaging.*` attributes that the exporter maps to typed dependencies.
-3. **Two nodes have no server side**: `api.globalpayments-example.com` and
-   `api.emailprovider-example.com`. They are deliberately uninstrumented third parties. The
-   map is showing you exactly where your instrumentation stops — which is one of the most
-   useful things it does.
-
-Now set the time range to the **inventory incident window** and look again.
-
-`shared-api-inventory` turns red — and so do edges in **both Retail and Payments**. That is
-the point of the whole estate design. Inventory lives in the Platform domain, but it is
-called by `retail-api-orders` during checkout *and* by `pay-worker-settlement` when it
-commits stock after payment clears. One service degrades; two business domains bleed.
-
-This is the argument against making "domain" a hard boundary. If each domain owned an
-isolated workspace, this single picture would be three disconnected pictures, and the on-call
-engineer in Payments would have no idea why their worker was failing.
-
----
-
-## Stop 2 — One transaction, five resources
-
-From the map, click `shared-api-inventory` → **Investigate failures** → pick a failed
-operation. Or run this and click any `OperationId`:
-
-```kusto
-AppRequests
-| where TimeGenerated > ago(26h) and AppRoleName == "retail-api-orders" and Success == false
-| project TimeGenerated, OperationId, Name, ResultCode
-| take 20
-```
-
-You get the full waterfall: `retail-web` → `retail-api-orders` → `shared-api-inventory` →
-SQL, then the payments leg, the Service Bus hop, and the settlement worker.
-
-### "Wait — is the same telemetry being sent to multiple resources?"
-
-No. This is the question everyone asks at this stop, and it is worth answering precisely,
-because the answer explains how distributed tracing actually works.
-
-Run this to see one trace laid out with its owning resource:
-
-```kusto
-let op = toscalar(
-    AppRequests
-    | where TimeGenerated > ago(26h) and AppRoleName == "shared-api-inventory"
-    | take 1 | project OperationId);
-union AppRequests, AppDependencies
-| where TimeGenerated > ago(26h) and OperationId == op
-| extend Resource = tostring(split(_ResourceId, "/")[-1])
-| project TimeGenerated, AppRoleName, Resource, Table = Type, Name, Id, ParentId
-| order by TimeGenerated asc
-```
-
-Two things are true at once:
-
-- **Each span exists exactly once, in exactly one resource.** A given service's spans go to
-  that service's Application Insights resource and nowhere else. There is no duplication.
-- **The trace is assembled across all of them** at query time, by shared `OperationId`.
-
-So a 13-span transaction spanning five resources looks enormously detailed no matter which
-resource you opened it from. `shared-api-inventory` contributes only two of those spans — its
-own request and its SQL call — but because it sits in the middle of the busiest flow, opening
-it shows you everything around it.
-
-**The one thing that genuinely looks like a duplicate:** `POST /api/reserve` appears twice.
-Once as a *dependency* in `retail-api-orders`, once as a *request* in `shared-api-inventory`.
-Check the `Id` and `ParentId` columns — the caller's dependency span is the **parent** of the
-callee's request span. They are two different spans describing the two ends of one network
-call: the client's view (including connection and transit time) and the server's view (time
-actually spent handling it). The gap between their durations is your network and queuing
-overhead. This is normal, correct, and useful — but it does mean you must never
-`union AppRequests, AppDependencies` and call the result "number of calls."
-
----
-
-## Stop 3 — Drilling from a failure to a root cause
-
-Set the range to the **catalog SQL timeout** window. Open **ai-retail-api-catalog** →
-**Failures** → **Dependencies** tab.
-
-You will find failed SQL dependencies with `ResultCode` `-2` — SQL Server's timeout code. The
-deadlocks in the inventory incident carry `1205`. These are real SQL Server error codes, not
-invented ones, so the muscle memory you build here transfers.
-
-Click into an operation and note that the exception on the server span
-(`Contoso.Catalog.QueryTimeoutException`) and the failing SQL dependency underneath it are in
-the same trace. That descent — user-facing failure → responsible service → exact failing
-statement — is the payoff for correlated telemetry.
-
-> **A detail worth knowing:** SQL dependencies have an empty `ResultCode` when they succeed.
-> That is not a gap in the demo; the Azure Monitor exporter simply does not populate it for
-> successful database spans. Do not build alerts that assume it is always present.
-
----
-
-## Stop 4 — Latency without failure
-
-Set the range to the **payment latency** window. Open **ai-pay-api-gateway** →
-**Performance**.
-
-`POST /api/authorize` sits at roughly 2–3 seconds at P95. Drill in and the time is
-overwhelmingly spent in the external `POST /v2/charges` call to the uninstrumented payment
-processor.
-
-This is the case where you can see *that* you are slow and *where*, but not *why* — because
-the slow thing is somebody else's system. The honest conclusion is "open a ticket with the
-provider", and the map told you that in one click. Note also how the latency propagates
-upstream into `retail-api-orders` and `retail-web`: the customer feels a slow checkout, and
-three services look guilty, but only one is.
-
----
-
-## Stop 5 — Logs, correlated to traces
-
-Application Insights is not only spans. Run:
-
-```kusto
-AppTraces
-| where TimeGenerated > ago(26h) and SeverityLevel >= 2
-| project TimeGenerated, AppRoleName, SeverityLevel, Message, OperationId, ParentId
-| order by TimeGenerated desc
-| take 50
-```
-
-Every row carries `OperationId` and `ParentId`, so a log line drops you straight into the
-transaction that produced it. Severity maps as `1` = Information, `2` = Warning, `3` = Error.
-
-Look for this pair during the inventory incident:
-
-- `shared-api-inventory` logs an **Error**: deadlock on `dbo.StockLevels`
-- `retail-api-orders` logs a **Warning**: abandoning checkout for the order
-
-Different services, different resources, same trace, one story. Getting this for free is the
-reason to use `ILogger` inside instrumented code rather than writing to stdout.
-
-Then look for `pay-worker-settlement` logging *"Settled payment but could not commit stock"*.
-That failure happens **after** the customer already received a `200`. Nobody is watching a
-screen when it happens. This is the class of bug that async workers exist to create, and the
-reason worker services need their own alerting rather than inheriting the front end's.
-
----
-
-## Stop 6 — One query, eight resources, no joins
-
-```kusto
-AppDependencies
-| where TimeGenerated > ago(26h)
-| summarize Calls=count(), Failures=countif(Success == false),
-            P95ms=round(percentile(DurationMs,95),0)
-    by Caller = AppRoleName, DependencyType, Target
-| extend FailureRatePct = round(100.0 * Failures / Calls, 2)
-| order by Calls desc
-```
-
-Notice what is **absent**: no `app()`, no `workspace()`, no `union` across resources. Because
-every Application Insights resource here is workspace-based and points at the same workspace,
-one table already contains all eight services.
-
-Had these been classic (non-workspace-based) resources, or spread across several workspaces,
-this query would need an explicit cross-resource `union` and would be subject to the
-100-resource limit. This single query is the strongest practical argument in the whole
-architecture.
-
-Now find every consumer of the shared service:
-
-```kusto
-AppDependencies
-| where TimeGenerated > ago(26h) and Target has "shared-api-inventory"
-| summarize Calls=count(), Failures=countif(Success == false) by Caller = AppRoleName
-```
-
-Two callers, in two different domains. Before you change that service's API, this is your
-blast-radius list.
-
----
-
-## Stop 7 — The portfolio workbook
-
-**Monitor** → **Workbooks** → **Application Portfolio - Observability Demo**.
-
-Above the tabs are three filters that apply everywhere: **Time range**, **Domain**, and
-**Criticality**. Domain and Criticality are multi-select and driven off `AppCatalog` itself,
-so adding a domain to `catalog.json` makes it appear in the dropdown with no workbook change.
-Selecting nothing means *everything* — there is deliberately no "All" entry, because an empty
-selection already expands to `dynamic([])`, which every query treats as "no filter".
-
-Six tabs:
-
-1. **Portfolio** — a **tree**. Collapsed, it is one row per business domain with rolled-up
-   availability, request volume and P95 — the executive view. Expand a domain and it becomes
-   one row per application: health against that app's *own* SLO, owner, business owner, and
-   live links to the app, docs, runbook and repo. Availability is heat-mapped, so a red cell
-   is a real problem. This is the "drill in and out" answer: same tile, two audiences.
-2. **Estate map** — see Stop 7a.
-3. **Domain rollup** — the same health aggregated by business domain. This is the taxonomy
-   paying off: because `domain` is a *tag*, an executive-facing rollup is one `by Domain`.
-4. **Cross-resource** — every dependency across all eight services in a single result set.
-5. **Transactions** — see Stop 7b.
-6. **Metadata quality** — see Stop 8.
-
-Clicking the first column of the rollup, cross-resource and drift grids opens the whole row
-as a property grid in a **side pane**, rather than navigating away. Useful when a row is wider
-than the screen and you do not want to lose your place mid-demo.
-
-The important thing here is the join. Azure knows request rates, failure rates, and latency.
-Azure has no idea what a service is *for*, who owns it, what its SLO is, or where its runbook
-lives. That half comes from `catalog/catalog.json`, and the workbook joins the two on the
-workload key.
-
-Every tab joins the same live `AppCatalog` reference function that `deploy.sh` publishes —
-edit the catalog, re-run the sync, and every tile updates with no rebuild. See
-[Keeping the catalog current](#keeping-the-catalog-current).
-
----
-
-## Stop 7a — The estate map
-
-Application Map is scoped to one Application Insights resource. This tab is the same idea for
-the **whole estate**, in one picture.
-
-**What to point at, in order:**
-
-1. **`Inventory Service` sits in the middle with two inbound edges** — one from Retail
-   (`retail-api-orders`), one from Payments (`pay-worker-settlement`). That single node is the
-   argument for the whole taxonomy: a shared service means domain is a *reporting tag*, not a
-   containment boundary. When Inventory degrades, the blast radius crosses domains, and the
-   map shows it before anyone files a ticket.
-2. **Node colour is health, edge thickness is call volume.** During the inventory-failure
-   window, Inventory and both its callers go amber together — a visual blast radius.
-3. **Hover any node** for display name, domain, owner, tier, call and failure counts, P95, and
-   the app URL.
-4. **Click a node** and the grid below loads its catalog entry, with links to the app, docs,
-   runbook and repo. That is the portfolio and the topology joined in one gesture.
-5. **The honeycomb below** drops the edges and groups every service by domain, colour-coded
-   against each service's *own* SLO. The map answers "what talks to what"; the honeycomb
-   answers "how is each domain doing".
-6. **Now set the Domain filter to `Payments`.** The map does not shrink to two nodes. It keeps
-   the Payments services in full colour and keeps everything one hop away — including
-   `retail-api-orders` and `Inventory Service` — in **gray**, labelled *context* on hover. The
-   databases Payments does not touch disappear.
-
-**Why the map filters differently to everything else.** On a list, filtering means *remove
-rows*, and that is correct. On a graph it is quietly wrong. A plain `Domain == Payments`
-filter would delete the Retail caller of `Inventory Service` — and the map would still render
-perfectly happily, just missing the cross-domain fan-in that is the single most important
-thing on the tab. It fails *silently*, which is the worst way to fail in front of an audience.
-
-So the map treats the selection as a **focus**, not an exclusion: keep the selected nodes plus
-their immediate neighbours, and gray the neighbours out. You get emphasis without losing the
-blast radius. Every other tab uses ordinary exclusion filtering, because for a list that is
-the right semantics.
-
-**How the edges are derived** — this matters, because it is the difference between a real map
-and a drawing. A caller emits a dependency with `Id = X`; the callee's request carries
-`ParentId = X`. Joining on that yields a true service-to-service edge. Using the dependency
-`Target` alone would give you `service -> hostname`, which does not resolve to a node and
-fragments the map.
-
-Two corrections were needed to make it honest, both worth knowing if you adapt the query
-(`queries/estate-map.kql`):
-
-- **Orphan dependencies create phantom duplicate nodes.** Some dependencies have no matching
-  request — sampling, or the callee's telemetry falling outside the time window. Those render
-  as a second node for a service that already exists. For HTTP the fix is to resolve the
-  target hostname back to a known role name.
-- **Do not apply that hostname flattening to data stores.** Doing so collapsed four distinct
-  databases into a single node, which made the map say something false. Only HTTP targets get
-  flattened; data stores keep the database name.
-
-**Honest limits of the workbook graph:**
-
-- A node shows **one tooltip string per content slot**. The workaround used here is to compose
-  the entire hover card as a `Hover` column in KQL and reference it as `["Hover"]`.
-- Force-directed layout (`graphOrientation: 2`) re-seeds every refresh, so the picture moves
-  around between loads. This tab defaults to **flow, left-to-right**, which is deterministic
-  and demos better. The layout toggle is still available if you want to show the force view.
-- **Edges have no hover** and no drill-in — only the static label.
-- If you need richer interaction (hover detail on edges, click-through context menus), the
-  Node Graph panel in Azure Managed Grafana is the better tool. It reads the same Log
-  Analytics data; it just needs separate `nodes` and `edges` result sets.
-
----
-
-## Stop 7b — One click from a failure to the whole transaction
-
-The **Transactions** tab lists every failed request in the estate — from any service, not just
-the web tier — and honours the Domain and Criticality filters.
-
-**Click any row.** The grid below reconstructs the *entire* distributed transaction that
-failure belonged to, as a real call tree: every service, every SQL statement, every Service Bus
-hop, indented by parent/child and offset in milliseconds from the first span.
-
-A typical checkout trace has sixteen spans across five services:
-
-```
-▸ POST /checkout                        retail-web              +0 ms     383 ms
-  · POST /api/orders                    retail-web        HTTP  +6 ms     378 ms
-    ▸ POST /api/orders                  retail-api-orders       +10 ms    372 ms
-      · POST /api/reserve               retail-api-orders HTTP  +16 ms     46 ms
-        ▸ POST /api/reserve             shared-api-inventory    +18 ms     42 ms
-          · SQL: UPDATE dbo.StockLevels shared-api-inventory SQL +22 ms    27 ms
-      · POST /api/authorize             retail-api-orders HTTP  +66 ms    271 ms
-        ▸ POST /api/authorize           pay-api-gateway         +68 ms    267 ms
-          · POST /v2/charges            pay-api-gateway   HTTP  +72 ms    238 ms
-          · ServiceBusSender.Send       pay-api-gateway   sb    +310 ms     9 ms
-      · SQL: INSERT dbo.Orders          retail-api-orders SQL   +339 ms    18 ms
-            ▸ ProcessMessage            pay-worker-settlement   +459 ms    69 ms
-              · SQL: INSERT ...         pay-worker-settlement SQL +463 ms  28 ms
-              · POST /api/commit        pay-worker-settlement HTTP +493 ms 26 ms
-                ▸ POST /api/commit      shared-api-inventory    +495 ms    22 ms
-                  · SQL: UPDATE ...     shared-api-inventory SQL +498 ms   15 ms
-```
-
-Three things are worth saying out loud when this is on screen:
-
-- **Nothing extra was instrumented to make this work.** The services propagate W3C trace
-  context, so every span already carries its own id and its parent's. The tree is that
-  structure read back out — one `union`, one self-referencing hierarchy.
-- **The database calls are in the tree, not beside it.** "End to end including database calls"
-  is not a separate feature; a SQL span is just a span with a different `DependencyType`.
-- **The async hop is still connected.** `pay-worker-settlement` runs *after* the HTTP response
-  went back to the user — note the +459 ms offset against a 383 ms root — and it still lands
-  in the same trace, because the Service Bus message carried the trace context with it.
-
-Select a **Payments** failure and the trace still resolves all the way back to `retail-web`.
-That is deliberate: the trace is fetched by operation, not by service, so a domain team sees
-the whole customer journey their failure sits inside, not just their own slice of it.
-
-Below the tree, any exceptions raised anywhere in the same transaction are listed separately.
-They are kept out of the tree on purpose — an exception is an event *on* a span, not a span,
-and forcing it into the hierarchy would mean inventing a parent for it.
-
-Two links sit on each failure row. **Details** attempts to open the native Application Insights
-transaction view for that item, and **App Insights** opens the owning component — useful when
-you want to hand off to a team's own resource and its per-resource Application Map.
-
----
-
-## Keeping the catalog current
-
-The catalog is published to Log Analytics as a **single saved function**, `AppCatalog`.
-`sync-catalog.mjs` writes it:
-
-```bash
-node sync-catalog.mjs        # after editing catalog/catalog.json
-```
-
-That function is ARM metadata, not log data — and the distinction is the whole reason it was
-chosen:
-
-| | `AppCatalog` (saved function) |
-|---|---|
-| What it is | ARM metadata — a saved function whose body is a `datatable()` |
-| Retention | **None. It never ages out.** |
-| Answers | What is true *now* |
-| Deletion | Implicit — the row is simply absent after a replace |
-| Canonical query | `AppCatalog` |
-
-Because it has no `TimeGenerated` and no retention, nothing can silently age out and **no
-keep-alive feeder has to exist** to stop entries being dropped. Deletion needs no tombstone
-and no `arg_max()`: publishing replaces the whole body, so omitting a row removes it.
-
-It is source-agnostic — it consumes a JSON array, so pulling from SQL Server is a pipe:
-
-```bash
-sqlcmd -S <server> -d <db> -G -C -h -1 -W \
-  -Q "SET NOCOUNT ON; SELECT * FROM dbo.ServiceCatalog FOR JSON PATH" > rows.json
-node sync-catalog.mjs --from rows.json
-```
-
-Point a timer-triggered Function or a nightly pipeline at that and the catalog stays current
-on its own.
-
-### One copy, on purpose
-
-Every workbook tile joins this one function. Nothing inlines the catalog.
-
-That is a deliberate correction. The workbook used to carry its own `datatable()` copies —
-and they had already drifted: the Portfolio copy spelled criticality `tier1` while the domain
-rollup copy spelled it `tier-1`, two versions of the same field in the same generated file,
-with nothing to flag the mismatch.
-
-### The limit, and the trade-off
-
-A saved function travels in one ARM request body, which is capped near 1 MB. At roughly
-480 bytes per entry that lands around **2,000 services**; `sync-catalog.mjs` refuses above a
-conservative 700 KB rather than failing mid-publish. Note the ceiling applies to *publishing*,
-not to querying.
-
-The real trade-off is time, not size: **a function only knows *now***. It cannot answer "who
-owned this service on the day of the incident?" If point-in-time history becomes a genuine
-requirement, the answer is a custom log table fed by the Logs Ingestion API — added
-deliberately, as a second component with its own defined role, rather than as a duplicate of
-this one.
-
-> **Gotcha, if you ever do add that table.** Adding a column to a custom table that already
-> exists does not work. The `PUT` succeeds, ARM reports the new column, `getschema` lists it —
-> and the ingestion pipeline silently drops that field on every subsequent row, with no error
-> anywhere. You have to delete the table and recreate it with the full schema. Deleting a
-> table is a schema operation; it does not remove rows already ingested.
-
----
-
-## Stop 8 — Where the two halves disagree
-
-The **Metadata quality** tab answers a question most estates cannot: *does our inventory
-match reality?*
-
-- 🔴 **Emitting telemetry but not in the catalog** — a service nobody registered. The classic
-  shadow-IT finding.
-- 🟠 **In the catalog but emitting nothing** — either decommissioned and never removed, or
-  broken instrumentation. Both worth knowing.
-- 🟢 **Agreeing** — the goal.
-
-To watch it work, add a fake entry to `catalog.json`, re-run `build-workbook.mjs` and
-`deploy.sh`, and it will appear as orange within a minute.
-
-**This tab deliberately ignores the Domain filter for uncatalogued services.** An uncatalogued
-service has no domain and no tier — it is not in the catalog, that is the whole finding — so
-filtering on domain would delete exactly the rows the tab exists to surface, and leave it
-looking reassuringly clean. Catalogued rows filter normally; shadow services always show.
-Verified: with `Domain = Payments` selected, a Retail service missing from the catalog still
-appears.
-
-This drift check is the difference between a portfolio that is trusted and one that quietly
-rots. Run it on a schedule.
-
----
-
-## Stop 9 — Watch it happen live
-
-Everything so far has been **forensic**: history, already written, already ingested. The last
-stop is the opposite — telemetry arriving *while people are looking at the screen*.
-
-If you have not already, start live mode in a second terminal:
-
-```bash
-cd simulator && dotnet run -c Release -- --backfill-hours 0 --live
-```
-
-One trace per second by default; use `--live-rate 120` if you want the charts to move faster.
-
-The console prints one line per distributed trace, which is the point — it is the ground
-truth for what should be appearing in the portal. Watch a `FAILED` line go past, then go find
-that exact trace in the portal.
-
-### What to show, in order
-
-**1. Live Metrics — the one thing backfill cannot do.**
-Open any resource → **Live Metrics**. Sub-second latency, no ingestion delay, no sampling.
-This blade only works against telemetry timestamped *now*, which is precisely why the
-backfilled estate showed nothing here.
-
-> Live Metrics **cannot split by cloud role name**, so it shows one service at a time. That is
-> a genuine product limitation and a good reason not to build a demo around it — but it is
-> excellent for ten seconds of "yes, this is happening right now".
-
-**2. Application Map with a live time range.**
-Set the time range to **Last 30 minutes** and leave the map open. Failed edges appear and
-clear as incidents come and go, because live mode injects incidents continuously (~25% of
-traces run in a degraded window; ~6–8% actually fail) rather than in fixed windows.
-
-**3. A chart that grows.**
-Any metric chart on **Last 30 minutes** with auto-refresh on. The right-hand edge advances
-while you talk. Nothing sells "this is a live system" faster.
-
-**4. Transaction search, newest first.**
-Sort by timestamp descending and refresh. New transactions appear continuously, and you can
-open one that was emitted seconds ago.
-
-### Two honest caveats
-
-| | |
-|---|---|
-| **Log data is still 1–2 minutes behind** | Live Metrics is instant, but `AppRequests` and friends go through normal ingestion. Do not promise instant results from a KQL query. |
-| **Pre-aggregated metrics only work in live mode** | Metrics ingestion rejects backdating beyond ~20 minutes, so the backfill produced none. This is exactly why the portfolio workbook queries the **log tables** rather than metrics — and live mode is your chance to show metric-based charts working. |
-
----
-
-# Part 4 — Reference
-
-## What is synthetic, and what is not
-
-Being precise about this matters, because the demo's value depends on it.
-
-**Real:** the OpenTelemetry SDK, the Azure Monitor exporter, the semantic conventions, the
-ingestion pipeline, the storage schema, and every query, map, and workbook you just used.
-Azure cannot tell this estate from a real one.
-
-**Synthetic:** the events themselves. No service is deployed. There is no SQL Server, no
-Redis, no Cosmos DB, no Service Bus namespace. One console process emits correlated spans
-with back-dated timestamps as if it were eight services.
-
-## How the simulation works
-
-One console process emits correlated OpenTelemetry spans, using one `ActivitySource` and
-`TracerProvider` per simulated service, each pointed at that service's own connection string.
-Parent span context is threaded down the tree explicitly, so traces stitch across services and
-therefore across Application Insights resources.
-
-**Each span is sent to exactly one resource.** Nothing is duplicated — see
-[Stop 2](#wait--is-the-same-telemetry-being-sent-to-multiple-resources).
-
-### Fidelity
-
-The goal is telemetry indistinguishable from a real .NET app built with today's SDKs, so
-attributes follow the **current stable** OpenTelemetry semantic conventions and span names
-follow what the real instrumentation libraries actually emit (`ServiceBusSender.Send`, not the
-generic `"{queue} send"`). Two deliberate divergences, both commented in `Flows.cs`:
-
-- **Cosmos DB** emits `db.system.name = "cosmosdb"`, not the registry's `azure.cosmosdb`,
-  because that is what the shipping SDK produces. The spec value would render a
-  `DependencyType` that appears in no real application.
-- **Queue correlation is parent-child.** The real `Azure.Messaging.ServiceBus` SDK uses span
-  links and starts a new trace, so producer and consumer appear as *separate* traces. This
-  models the outcome you get after following the manual context-propagation guidance in
-  `04-csharp-instrumentation.md`, which is what you want for end-to-end visibility.
-
-**One thing to know before you copy anything:** the simulator is a **telemetry generator, not
-an instrumentation reference**. To instrument a real application, read
-`04-csharp-instrumentation.md`.
-
-For the internals — the build-then-emit model, per-service pipeline isolation, how back-dating
-works for traces and logs, and the full attribute-to-table mapping — see
-[`simulator/ARCHITECTURE.md`](simulator/ARCHITECTURE.md).
-
-## Layout
-
-```
-demo/
-  README.md               This file — setup, options, and the guided tour
-  deploy.sh               RG + workspace + 8 App Insights + catalog + workbook
-  teardown.sh             Single-command cleanup
-  build-workbook.mjs      Generates workbook-portfolio.json (run after editing tiles)
-  sync-catalog.mjs        Publishes the catalog to Log Analytics as the AppCatalog function
-  workbook-portfolio.json ARM template (generated)
-  catalog/catalog.json    Service catalog — the hand-authored source of truth
-  queries/*.kql           Cross-resource portfolio queries
-    estate-map.kql        Holistic dependency graph (nodes + edges) for the Estate map tab
-  simulator/              .NET console app: topology, flows, scenarios
-    ARCHITECTURE.md       How the simulator is built and how data flows through it
-```
-
-### Editing the workbook
-
-The workbook is generated, not hand-edited — an ARM workbook carries its entire definition as
-an escaped JSON *string*, which is miserable to maintain by hand:
-
-```bash
-node build-workbook.mjs && ./deploy.sh
-```
-
-The workbook resource name is a **deterministic** GUID, so redeploying updates it in place
-instead of creating duplicates.
-
-The estate map's KQL lives in `queries/estate-map.kql` rather than inside the generator, so
-you can paste it straight into the Logs blade to iterate on it. `build-workbook.mjs` reads
-that file at build time — there is one copy, not two.
-
-That file now carries three workbook parameter tokens rather than one. To run it directly in
-the Logs blade, replace `{TimeRange}` with a predicate such as `> ago(24h)`, and `{Domain}`
-and `{Tier}` with either nothing (no filter) or a quoted list like `'Retail','Payments'`.
-
-### Filters are per-query, not global
-
-A workbook parameter does nothing on its own. Adding `Domain` to the parameters block and
-forgetting to thread it into one of the `.kql` strings produces the worst possible outcome:
-the dropdown appears, the user selects a value, the tile refreshes, and **the numbers do not
-change**. There is no error. Every filterable query in `build-workbook.mjs` starts from the
-shared `filterPrelude` constant for this reason, and `.validate-queries.mjs`-style checking
-should always run each tile under several selections and compare row counts, not just check
-that the query parses.
-
-## Gotchas worth carrying home
-
-| Gotcha | Why it matters |
-|---|---|
-| **The exporter samples by default.** `AzureMonitorExporterOptions.TracesPerSecond` defaults to `5` in exporter 1.8.x, and it installs a sampler that overrides one set *earlier* on the builder. | An app upgrading its exporter can silently start dropping telemetry. Set `TracesPerSecond = null` and call `SetSampler()` **after** `AddAzureMonitorTraceExporter`. |
-| Ingestion rejects telemetry older than **48 hours**. | Backfill is capped; the simulator refuses more than 47h. |
-| Pre-aggregated **metrics** accept only ~20 minutes of backdating. | Backfilled dashboards must query log tables, not metrics. Every tile in the workbook does. |
-| Cross-resource queries cap at **100 resources**. | Eight is fine. Plan for it at scale. |
-| Live Metrics cannot split by role name. | Do not build a multi-service demo around it. |
-| `AppDependencies.Name` gets a `SQL: ` prefix for SQL dependencies. | Added by the exporter path. Account for it when matching on names. |
-| There is no `ForceFlush` on `ILoggerFactory`. | Disposing it is the only way to flush logs — so dispose only at shutdown, or you silently kill logging for everything after. |
-| A dependency whose callee request is missing renders as a **duplicate node** on a topology graph. | Resolve HTTP targets back to a known role name — but only HTTP, or you collapse distinct databases into one node and the map starts lying. |
-| The workbook graph allows **one tooltip string per content slot**. | Compose the whole hover card as a column in KQL and reference it as `["ColumnName"]`. |
-| Force-directed graph layout re-seeds on every refresh. | Use `graphOrientation: 1` (flow) for anything you intend to demo or screenshot. |
-| Workbook `GET` returns an empty `serializedData`. | Append `&canFetchContent=true` to the ARM URL, or you will think your deployment shipped an empty workbook. |
-| **Filtering a topology graph by exclusion is silently wrong.** | Removing non-matching nodes also removes cross-domain callers, and the graph still renders. Filter a graph by *focus* — keep neighbours, gray them out. |
-| A tree grid needs `hierarchySettings` **inside** `gridSettings`, and `treeType: 0` for Parent/Child. | `treeType: 1` is Group By, which generates its own grouping rows and cannot show real aggregates on them. |
-| `AppRequests.ItemId` does not exist; the column is **`_ItemId`**, and `getschema` does not list it. | Same for `_ResourceId`. Both are selectable and survive a `join`. |
-| A root request's `ParentId` is its **`OperationId`**, not empty. | Left alone it points at a non-existent span and a tree grid has nothing to root. Rewrite unresolvable parents to `""`. |
-
-## Known environment quirks
-
-| Quirk | Workaround |
-|---|---|
-| `az log-analytics` extension can fail with `No module named 'pkg_resources'` | Query via `az rest --method post --url "https://api.loganalytics.io/v1/workspaces/<guid>/query" --resource "https://api.loganalytics.io" --body "@file.json"` |
-| `teardown.sh` confirmation fails when piped from PowerShell | CRLF. Run it interactively, or pipe from inside bash: `bash -c 'printf "AppInsightsDemo\n" \| ./teardown.sh'` |
-| `&` in a URL is eaten by cmd when calling `az rest` on Windows | Use `Invoke-RestMethod` with a bearer token from `az account get-access-token` |
-| Non-ASCII in ARM string parameters can be mangled by the CLI on Windows | Keep ARM-level strings ASCII; text inside `serializedData` is unaffected |
-| `dotnet run --no-build` fails after only a Debug build | Match the configuration: `dotnet build -c Release` first |
-
-## Not in scope
-
-Fabric integration · availability tests and SLO alert rules · real deployed services ·
-prod/non-prod duplication · CI/CD wiring.
+This removes the **whole platform group**, not just the demo, and force-deletes its workspace data. Review the [cleanup boundary](../README.md#cost-and-clean-up) first.

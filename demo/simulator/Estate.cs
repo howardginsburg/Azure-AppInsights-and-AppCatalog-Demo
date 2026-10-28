@@ -9,13 +9,16 @@ using OpenTelemetry.Trace;
 namespace ObsDemo.Simulator;
 
 /// <summary>
-/// One simulated workload. Each maps 1:1 to an Application Insights resource,
-/// which is exactly the topology doc 02 recommends: one resource per workload
-/// per environment, with business domain carried as a tag rather than as a boundary.
+/// One simulated app. Each maps 1:1 to an Application Insights resource registered by
+/// demo/apps.bicep, which also holds its domain, criticality, and owner as Azure tags.
 /// </summary>
-public sealed record ServiceDef(string Workload, string Domain, string EnvVar)
+public sealed record ServiceDef(string Workload)
 {
     public string SourceName => $"sim.{Workload}";
+
+    /// <summary>The .env variable holding this app's connection string, as demo/setup.sh writes it.</summary>
+    public string EnvVar => "APPINSIGHTS_" + new string(Workload.ToUpperInvariant()
+        .Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_').ToArray());
 }
 
 /// <summary>
@@ -71,14 +74,14 @@ public sealed class Estate : IDisposable
 {
     public static readonly ServiceDef[] Services =
     [
-        new("retail-web",            "Retail",   "APPINSIGHTS_RETAIL_WEB"),
-        new("retail-api-orders",     "Retail",   "APPINSIGHTS_RETAIL_API_ORDERS"),
-        new("retail-api-catalog",    "Retail",   "APPINSIGHTS_RETAIL_API_CATALOG"),
-        new("pay-api-gateway",       "Payments", "APPINSIGHTS_PAY_API_GATEWAY"),
-        new("pay-worker-settlement", "Payments", "APPINSIGHTS_PAY_WORKER_SETTLEMENT"),
-        new("cust-api-profile",      "Customer", "APPINSIGHTS_CUST_API_PROFILE"),
-        new("cust-worker-notify",    "Customer", "APPINSIGHTS_CUST_WORKER_NOTIFY"),
-        new("shared-api-inventory",  "Platform", "APPINSIGHTS_SHARED_API_INVENTORY"),
+        new("retail-web"),
+        new("retail-api-orders"),
+        new("retail-api-catalog"),
+        new("pay-api-gateway"),
+        new("pay-worker-settlement"),
+        new("cust-api-profile"),
+        new("cust-worker-notify"),
+        new("shared-api-inventory"),
     ];
 
     private readonly Dictionary<string, ActivitySource> _sources = new();
@@ -106,7 +109,7 @@ public sealed class Estate : IDisposable
                 .AddAzureMonitorTraceExporter(o =>
                 {
                     o.ConnectionString = cs;
-                    // Exporter 1.8.x defaults to RATE-LIMITED sampling at TracesPerSecond = 5
+                    // The exporter defaults to RATE-LIMITED sampling at TracesPerSecond = 5
                     // and installs its own sampler, which silently overrides any sampler set
                     // earlier on the builder. A backfill emits far faster than 5 traces/sec, so
                     // leaving these at their defaults discards most of the telemetry.

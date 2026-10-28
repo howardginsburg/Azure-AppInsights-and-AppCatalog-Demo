@@ -1,0 +1,800 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "## Application Portfolio\n\nEvery Application Insights resource linked to this workspace, in one view. Each app's **domain**, **criticality**, and **owner** come from the Azure tags on its Application Insights resource. Business context (what the app is for, its SLO, runbook, and on-call) lives in the [catalog app](__CATALOG_URL__); every app links to it."
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "p-timerange",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 172800000
+                },
+                {
+                  "durationMs": 604800000
+                }
+              ],
+              "allowCustom": true
+            },
+            "timeContext": {
+              "durationMs": 86400000
+            },
+            "value": {
+              "durationMs": 86400000
+            }
+          },
+          {
+            "id": "p-domain",
+            "version": "KqlParameterItem/1.0",
+            "name": "Domain",
+            "label": "Domain",
+            "type": 2,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "isRequired": false,
+            "query": "let appTags = toscalar(\n    arg(\"\").Resources\n    | where type =~ \"microsoft.insights/components\"\n    | where tolower(tostring(properties.WorkspaceResourceId)) == tolower(\"__WORKSPACE_ID__\")\n    | summarize make_bag(bag_pack(tolower(id), tags)));\nprint b = appTags\n| mv-expand kind=array kv = b\n| extend v = tostring(kv[1].domain)\n| where isnotempty(v)\n| distinct v\n| order by v asc\n| project value = v, label = v",
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "__WORKSPACE_ID__"
+            ],
+            "value": []
+          },
+          {
+            "id": "p-tier",
+            "version": "KqlParameterItem/1.0",
+            "name": "Tier",
+            "label": "Criticality",
+            "type": 2,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "isRequired": false,
+            "query": "let appTags = toscalar(\n    arg(\"\").Resources\n    | where type =~ \"microsoft.insights/components\"\n    | where tolower(tostring(properties.WorkspaceResourceId)) == tolower(\"__WORKSPACE_ID__\")\n    | summarize make_bag(bag_pack(tolower(id), tags)));\nprint b = appTags\n| mv-expand kind=array kv = b\n| extend v = tostring(kv[1].criticality)\n| where isnotempty(v)\n| distinct v\n| order by v asc\n| project value = v, label = v",
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "__WORKSPACE_ID__"
+            ],
+            "value": []
+          }
+        ],
+        "style": "pills",
+        "queryType": 0
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 11,
+      "content": {
+        "version": "LinkItem/1.0",
+        "style": "tabs",
+        "links": [
+          {
+            "id": "t-portfolio",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "Portfolio",
+            "subTarget": "portfolio",
+            "style": "link"
+          },
+          {
+            "id": "t-map",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "Estate map",
+            "subTarget": "map",
+            "style": "link"
+          },
+          {
+            "id": "t-domains",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "Domain rollup",
+            "subTarget": "domains",
+            "style": "link"
+          },
+          {
+            "id": "t-cross",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "Cross-resource",
+            "subTarget": "cross",
+            "style": "link"
+          },
+          {
+            "id": "t-txn",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "Transactions",
+            "subTarget": "txn",
+            "style": "link"
+          },
+          {
+            "id": "t-meta",
+            "cellValue": "selectedTab",
+            "linkTarget": "parameter",
+            "linkLabel": "Metadata quality",
+            "subTarget": "meta",
+            "style": "link"
+          }
+        ]
+      },
+      "name": "tabs"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let appTags = toscalar(\n    arg(\"\").Resources\n    | where type =~ \"microsoft.insights/components\"\n    | where tolower(tostring(properties.WorkspaceResourceId)) == tolower(\"__WORKSPACE_ID__\")\n    | summarize make_bag(bag_pack(tolower(id), tags)));\nlet selDomain = dynamic([{Domain}]);\nlet selTier = dynamic([{Tier}]);\nlet apps =\n    AppRequests\n    | where TimeGenerated {TimeRange}\n    | summarize Requests = count(), Failures = countif(Success == false),\n                P95ms = round(percentile(DurationMs, 95), 0),\n                Resource = take_any(tolower(_ResourceId))\n      by App = AppRoleName\n    | extend tg = appTags[Resource]\n    | extend Domain = tostring(tg.domain), Tier = tostring(tg.criticality), Owner = tostring(tg.owner)\n    | extend Domain = iff(isempty(Domain), \"untagged\", Domain)\n    | where (array_length(selDomain) == 0 or Domain in (selDomain))\n        and (array_length(selTier) == 0 or Tier in (selTier))\n    | extend FailurePct = round(100.0 * Failures / Requests, 2);\nlet domains =\n    apps\n    | summarize Apps = count(), Requests = sum(Requests), Failures = sum(Failures), P95ms = max(P95ms) by Domain\n    | extend FailurePct = round(100.0 * Failures / Requests, 2);\nunion\n    (domains\n     | project Id = strcat(\"domain:\", Domain), ParentId = \"\", Application = strcat(Domain, \"  —  \", Apps, \" apps\"),\n               Domain, Criticality = \"\", Owner = \"\", Status = case(FailurePct >= 5.0, \"🔴 Error\", FailurePct >= 1.0, \"🟠 Warning\", \"🟢 Healthy\"),\n               Availability = round(100.0 - FailurePct, 2), Requests, Failures, P95ms, Catalog = \"\", Resource = \"\"),\n    (apps\n     | project Id = App, ParentId = strcat(\"domain:\", Domain), Application = App, Domain,\n               Criticality = Tier, Owner, Status = case(FailurePct >= 5.0, \"🔴 Error\", FailurePct >= 1.0, \"🟠 Warning\", \"🟢 Healthy\"),\n               Availability = round(100.0 - FailurePct, 2), Requests, Failures, P95ms,\n               Catalog = strcat(\"__CATALOG_URL__/?workload=\", url_encode_component(App)), Resource)\n| order by Domain asc, ParentId asc, Application asc",
+        "size": 0,
+        "title": "Portfolio: health by domain and app",
+        "timeContext": {
+          "durationMs": 86400000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "^Id$",
+              "formatter": 5
+            },
+            {
+              "columnMatch": "^ParentId$",
+              "formatter": 5
+            },
+            {
+              "columnMatch": "^Catalog$",
+              "formatter": 7,
+              "formatOptions": {
+                "linkTarget": "Url",
+                "linkLabel": "Open in catalog",
+                "linkIsContextBlade": false
+              }
+            },
+            {
+              "columnMatch": "^Resource$",
+              "formatter": 7,
+              "formatOptions": {
+                "linkTarget": "Resource",
+                "linkLabel": "App Insights"
+              }
+            },
+            {
+              "columnMatch": "^Availability$",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "redGreen"
+              }
+            },
+            {
+              "columnMatch": "^P95ms$",
+              "formatter": 4,
+              "formatOptions": {
+                "palette": "blue"
+              }
+            }
+          ],
+          "rowLimit": 500,
+          "filter": true,
+          "hierarchySettings": {
+            "idColumn": "Id",
+            "parentColumn": "ParentId",
+            "treeType": 0,
+            "expanderColumn": "Application",
+            "expandTopLevel": false
+          }
+        }
+      },
+      "name": "portfolio",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "portfolio"
+      }
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Estate map\n\nApplication Map for the whole estate rather than one resource. Edges come from joining each dependency to the request it caused, so they are real call paths. A service called from more than one domain shows the blast radius crossing domains. Node color is health and edge thickness is call volume. **Hover** a node for its tags; **click** one to load it below."
+      },
+      "name": "map-header",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "map"
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let appTags = toscalar(\n    arg(\"\").Resources\n    | where type =~ \"microsoft.insights/components\"\n    | where tolower(tostring(properties.WorkspaceResourceId)) == tolower(\"__WORKSPACE_ID__\")\n    | summarize make_bag(bag_pack(tolower(id), tags)));\nlet selDomain = dynamic([{Domain}]);\nlet selTier = dynamic([{Tier}]);\n// Estate topology, shared by the catalog app (server/estate.ts) and the portfolio workbook\n// (workbook/build-workbook.mjs). Edit it here; both read this file.\n//\n// Defines two tables and leaves the final expression to each consumer:\n//   nodes  one row per service (from requests) and per backing service (from dependencies)\n//   links  one row per caller -> callee pair\n//\n// {TimeRange} is the workbook's time parameter. The catalog app replaces it with \"> ago(<n>h)\".\n//\n// How edges are derived: a caller records a dependency with Id = X, and the callee's request\n// carries ParentId = X. Joining on that gives a true service-to-service edge. A dependency with\n// no matching request (sampling, or the callee's telemetry falling outside the time range) falls\n// back to its HTTP host name, resolved to a known service name where possible. Only HTTP gets\n// that treatment, so distinct databases keep distinct nodes.\n//\n// ResourceId is the Application Insights resource that received a service's telemetry. Its\n// Azure tags (domain, criticality, owner) classify the service.\nlet roles = toscalar(AppRequests | where TimeGenerated {TimeRange} | summarize make_set(AppRoleName));\nlet depsResolved =\n    AppDependencies\n    | where TimeGenerated {TimeRange}\n    | project depId = Id, src = AppRoleName, Target, DependencyType, DurationMs, Success\n    | join kind=leftouter (\n        AppRequests | where TimeGenerated {TimeRange} | project depId = ParentId, dstRole = AppRoleName\n      ) on depId\n    | extend httpRole = iff(DependencyType == \"HTTP\",\n        tostring(split(tostring(split(tostring(split(Target, \"/\")[0]), \":\")[0]), \".\")[0]), \"\")\n    | extend isSvc = isnotempty(dstRole) or httpRole in (roles)\n    // SQL and Cosmos DB targets look like \"host:port | DbName\"; the database name is the useful label.\n    | extend dbName = tostring(split(Target, \"| \")[1])\n    | extend tgt = case(\n        isnotempty(dstRole), dstRole,\n        httpRole in (roles), httpRole,\n        isnotempty(dbName),  dbName,\n        tostring(split(tostring(split(Target, \"/\")[0]), \":\")[0]))\n    | extend tgtKind = case(\n        isSvc, \"service\",\n        DependencyType in (\"SQL\", \"mysql\", \"postgresql\"), \"database\",\n        DependencyType in (\"cosmosdb\", \"redis\", \"Azure blob\", \"Azure table\"), \"datastore\",\n        DependencyType in (\"servicebus\", \"Queue Message\", \"eventhub\"), \"queue\",\n        \"external\");\nlet nodes =\n    union\n      (AppRequests\n       | where TimeGenerated {TimeRange}\n       | summarize Calls = count(), Fails = countif(Success == false),\n                   P95 = round(percentile(DurationMs, 95), 0),\n                   ResourceId = take_any(tolower(_ResourceId))\n         by Id = AppRoleName\n       | extend Kind = \"service\"),\n      (depsResolved\n       | where not(isSvc)\n       | summarize Calls = count(), Fails = countif(Success == false),\n                   P95 = round(percentile(DurationMs, 95), 0)\n         by Id = tgt, Kind = tgtKind\n       | extend ResourceId = \"\")\n    | extend FailPct = iff(Calls == 0, 0.0, round(100.0 * Fails / Calls, 2))\n    | extend Status = case(\n        Kind != \"service\", \"Infra\",\n        FailPct >= 5.0,    \"Error\",\n        FailPct >= 1.0,    \"Warning\",\n                           \"Healthy\")\n    | project Id, Kind, ResourceId, Calls, Fails, FailPct, P95, Status;\nlet links =\n    depsResolved\n    | summarize Calls = count(), Fails = countif(Success == false)\n        by SourceId = src, TargetId = tgt, DependencyType\n    | extend EdgeLabel = iff(Fails > 0, strcat(DependencyType, \"  \", Calls, \"  (\", Fails, \" failed)\"),\n                                        strcat(DependencyType, \"  \", Calls))\n    | project SourceId, TargetId, Calls, EdgeLabel;\n\n// Workbook-only part of the estate map. build-workbook.mjs appends it to the shared topology\n// query (standalone-catalog-graph/server/estate.kql, which defines `nodes` and `links`), after\n// the tag lookup (`appTags`) and the filter parameters (`selDomain`, `selTier`).\n//\n// Classification comes from the Azure tags on each service's Application Insights resource.\nlet classified =\n    nodes\n    | extend tg = appTags[ResourceId]\n    | extend Domain = case(Kind != \"service\", \"shared infrastructure\",\n                           isempty(tostring(tg.domain)), \"untagged\",\n                           tostring(tg.domain)),\n             Owner = iff(isempty(tostring(tg.owner)), \"n/a\", tostring(tg.owner)),\n             Tier = iff(isempty(tostring(tg.criticality)), \"n/a\", tostring(tg.criticality))\n    | extend Name = Id\n    // The graph shows one tooltip string per node, so the whole hover card is built here.\n    | extend Hover = strcat(\n        Name, \"  [\", Kind, \"]\",\n        \"\\ndomain: \", Domain,\n        \"\\nowner: \", Owner, \"   criticality: \", Tier,\n        \"\\ncalls: \", Calls, \"   failures: \", Fails, \" (\", FailPct, \"%)\",\n        \"\\nP95: \", P95, \" ms\");\n// FOCUS, NOT EXCLUDE. On a list, a filter removes rows. On a graph that is quietly wrong:\n// selecting Payments would delete the Retail caller of a shared service, and the map would\n// still render, just missing the cross-domain fan-in that matters most. So the selection\n// picks a focus set, and the map keeps it plus everything one hop away, drawn gray as context.\nlet noFilter = array_length(selDomain) == 0 and array_length(selTier) == 0;\nlet focusIds = toscalar(\n    classified\n    | where Kind == \"service\"\n    | where (array_length(selDomain) == 0 or Domain in (selDomain))\n        and (array_length(selTier) == 0 or Tier in (selTier))\n    | summarize make_set(Id));\nlet neighbourIds = toscalar(\n    links\n    | where SourceId in (focusIds) or TargetId in (focusIds)\n    | mv-expand nid = pack_array(SourceId, TargetId) to typeof(string)\n    | summarize make_set(nid));\nlet keep = set_union(focusIds, neighbourIds);\nclassified\n| where noFilter or Id in (keep)\n| extend Status = iff(noFilter or set_has_element(focusIds, Id), Status, \"Context\")\n| extend Hover = iff(noFilter or set_has_element(focusIds, Id), Hover,\n                     strcat(Hover, \"\\n\\n(context: outside the current filter)\"))\n| project Id, Name, Kind, Domain, Owner, Tier, Calls, Fails, FailPct, P95, Status, Hover\n| union (links | where noFilter or (SourceId in (keep) and TargetId in (keep)))\n",
+        "size": 3,
+        "title": "Service dependency map: all apps",
+        "timeContext": {
+          "durationMs": 86400000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "graph",
+        "graphSettings": {
+          "type": 0,
+          "topContent": {
+            "columnMatch": "Kind",
+            "formatter": 1
+          },
+          "centerContent": {
+            "columnMatch": "Name",
+            "formatter": 1,
+            "tooltipFormat": {
+              "tooltip": "[\"Hover\"]"
+            }
+          },
+          "bottomContent": {
+            "columnMatch": "Calls",
+            "formatter": 1,
+            "numberFormat": {
+              "unit": 0,
+              "options": {
+                "style": "decimal",
+                "useGrouping": true,
+                "maximumFractionDigits": 0
+              }
+            }
+          },
+          "nodeIdField": "Id",
+          "sourceIdField": "SourceId",
+          "targetIdField": "TargetId",
+          "graphOrientation": 1,
+          "showOrientationToggles": true,
+          "edgeLabel": "EdgeLabel",
+          "edgeSize": "Calls",
+          "nodeSize": null,
+          "staticNodeSize": 120,
+          "colorSettings": {
+            "nodeColorField": "Status",
+            "type": 3,
+            "thresholdsGrid": [
+              {
+                "operator": "==",
+                "thresholdValue": "Error",
+                "representation": "red"
+              },
+              {
+                "operator": "==",
+                "thresholdValue": "Warning",
+                "representation": "orange"
+              },
+              {
+                "operator": "==",
+                "thresholdValue": "Healthy",
+                "representation": "green"
+              },
+              {
+                "operator": "==",
+                "thresholdValue": "Infra",
+                "representation": "grayBlue"
+              },
+              {
+                "operator": "==",
+                "thresholdValue": "Context",
+                "representation": "gray"
+              },
+              {
+                "operator": "Default",
+                "thresholdValue": null,
+                "representation": "gray"
+              }
+            ]
+          },
+          "hivesMargin": 5
+        },
+        "exportFieldName": "Id",
+        "exportParameterName": "selectedNode",
+        "exportDefaultValue": "*",
+        "noDataMessage": "No dependency telemetry in this time range. Is the simulator running?"
+      },
+      "name": "estate-map",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "map"
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let appTags = toscalar(\n    arg(\"\").Resources\n    | where type =~ \"microsoft.insights/components\"\n    | where tolower(tostring(properties.WorkspaceResourceId)) == tolower(\"__WORKSPACE_ID__\")\n    | summarize make_bag(bag_pack(tolower(id), tags)));\nlet sel = \"{selectedNode}\";\nAppRequests\n| where TimeGenerated {TimeRange}\n| summarize Requests = count(), Failures = countif(Success == false),\n            P95ms = round(percentile(DurationMs, 95), 0),\n            Resource = take_any(tolower(_ResourceId))\n  by App = AppRoleName\n| extend tg = appTags[Resource]\n| extend Domain = tostring(tg.domain), Tier = tostring(tg.criticality), Owner = tostring(tg.owner)\n| extend Domain = iff(isempty(Domain), \"untagged\", Domain)\n| where sel == \"\" or sel == \"*\" or App == sel\n| project App, Domain, Criticality = Tier, Owner, Requests, Failures, P95ms,\n          Catalog = strcat(\"__CATALOG_URL__/?workload=\", url_encode_component(App)), Resource\n| order by App asc",
+        "size": 0,
+        "title": "Selected app",
+        "timeContext": {
+          "durationMs": 86400000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "^Catalog$",
+              "formatter": 7,
+              "formatOptions": {
+                "linkTarget": "Url",
+                "linkLabel": "Open in catalog",
+                "linkIsContextBlade": false
+              }
+            },
+            {
+              "columnMatch": "^Resource$",
+              "formatter": 7,
+              "formatOptions": {
+                "linkTarget": "Resource",
+                "linkLabel": "App Insights"
+              }
+            }
+          ],
+          "rowLimit": 50
+        }
+      },
+      "name": "map-detail",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "map"
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let appTags = toscalar(\n    arg(\"\").Resources\n    | where type =~ \"microsoft.insights/components\"\n    | where tolower(tostring(properties.WorkspaceResourceId)) == tolower(\"__WORKSPACE_ID__\")\n    | summarize make_bag(bag_pack(tolower(id), tags)));\nlet selDomain = dynamic([{Domain}]);\nlet selTier = dynamic([{Tier}]);\nAppRequests\n| where TimeGenerated {TimeRange}\n| summarize Requests = count(), Failures = countif(Success == false),\n            P95ms = round(percentile(DurationMs, 95), 0),\n            Resource = take_any(tolower(_ResourceId))\n  by App = AppRoleName\n| extend tg = appTags[Resource]\n| extend Domain = tostring(tg.domain), Tier = tostring(tg.criticality), Owner = tostring(tg.owner)\n| extend Domain = iff(isempty(Domain), \"untagged\", Domain)\n| where (array_length(selDomain) == 0 or Domain in (selDomain))\n    and (array_length(selTier) == 0 or Tier in (selTier))\n| extend FailPct = iff(Requests == 0, 0.0, round(100.0 * Failures / Requests, 2))\n| extend Status = case(FailPct >= 5.0, \"Error\", FailPct >= 1.0, \"Warning\", \"Healthy\")\n| extend Hover = strcat(App, \"\\ndomain: \", Domain,\n                        \"   criticality: \", iff(isempty(Tier), \"n/a\", Tier),\n                        \"\\nowner: \", iff(isempty(Owner), \"n/a\", Owner),\n                        \"\\nfailure rate: \", FailPct, \"%\",\n                        \"\\ncalls: \", Requests, \"   failures: \", Failures,\n                        \"\\nP95: \", P95ms, \" ms\")\n| project Name = App, Domain, Status, FailPct, Calls = Requests, Hover\n| order by Domain asc, Name asc",
+        "size": 3,
+        "title": "Health by domain: every app, grouped",
+        "timeContext": {
+          "durationMs": 86400000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "graph",
+        "graphSettings": {
+          "type": 2,
+          "centerContent": {
+            "columnMatch": "Name",
+            "formatter": 1,
+            "tooltipFormat": {
+              "tooltip": "[\"Hover\"]"
+            }
+          },
+          "hivesContent": {
+            "columnMatch": "Domain",
+            "formatter": 1
+          },
+          "nodeIdField": "Name",
+          "groupByField": "Domain",
+          "graphOrientation": 3,
+          "showOrientationToggles": false,
+          "nodeSize": null,
+          "staticNodeSize": 90,
+          "colorSettings": {
+            "nodeColorField": "Status",
+            "type": 3,
+            "thresholdsGrid": [
+              {
+                "operator": "==",
+                "thresholdValue": "Error",
+                "representation": "red"
+              },
+              {
+                "operator": "==",
+                "thresholdValue": "Warning",
+                "representation": "orange"
+              },
+              {
+                "operator": "==",
+                "thresholdValue": "Healthy",
+                "representation": "green"
+              },
+              {
+                "operator": "==",
+                "thresholdValue": "Infra",
+                "representation": "grayBlue"
+              },
+              {
+                "operator": "==",
+                "thresholdValue": "Context",
+                "representation": "gray"
+              },
+              {
+                "operator": "Default",
+                "thresholdValue": null,
+                "representation": "gray"
+              }
+            ]
+          },
+          "hivesMargin": 5
+        }
+      },
+      "name": "estate-hive",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "map"
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let appTags = toscalar(\n    arg(\"\").Resources\n    | where type =~ \"microsoft.insights/components\"\n    | where tolower(tostring(properties.WorkspaceResourceId)) == tolower(\"__WORKSPACE_ID__\")\n    | summarize make_bag(bag_pack(tolower(id), tags)));\nlet selDomain = dynamic([{Domain}]);\nlet selTier = dynamic([{Tier}]);\nAppRequests\n| where TimeGenerated {TimeRange}\n| summarize Requests = count(), Failures = countif(Success == false),\n            P95ms = round(percentile(DurationMs, 95), 0),\n            Resource = take_any(tolower(_ResourceId))\n  by App = AppRoleName\n| extend tg = appTags[Resource]\n| extend Domain = tostring(tg.domain), Tier = tostring(tg.criticality), Owner = tostring(tg.owner)\n| extend Domain = iff(isempty(Domain), \"untagged\", Domain)\n| where (array_length(selDomain) == 0 or Domain in (selDomain))\n    and (array_length(selTier) == 0 or Tier in (selTier))\n| summarize Apps = dcount(App), Requests = sum(Requests), Failures = sum(Failures),\n            WorstP95ms = max(P95ms), Tier1Apps = dcountif(App, Tier == \"tier1\")\n  by Domain\n| extend FailureRatePct = round(100.0 * Failures / Requests, 2)\n| extend AvailabilityPct = round(100.0 - FailureRatePct, 3)\n| project Domain, Health = case(FailureRatePct >= 5.0, \"🔴 Error\", FailureRatePct >= 1.0, \"🟠 Warning\", \"🟢 Healthy\"), Apps, Tier1Apps, Requests, Failures,\n          FailureRatePct, AvailabilityPct, WorstP95ms\n| order by FailureRatePct desc",
+        "size": 0,
+        "title": "Health by business domain",
+        "timeContext": {
+          "durationMs": 86400000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "^Domain$",
+              "formatter": 7,
+              "formatOptions": {
+                "linkTarget": "GenericDetails",
+                "linkIsContextBlade": true
+              }
+            },
+            {
+              "columnMatch": "^AvailabilityPct$",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "redGreen"
+              }
+            },
+            {
+              "columnMatch": "^Requests$",
+              "formatter": 4,
+              "formatOptions": {
+                "palette": "blue"
+              }
+            }
+          ],
+          "rowLimit": 50,
+          "filter": true
+        }
+      },
+      "name": "domains",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "domains"
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let appTags = toscalar(\n    arg(\"\").Resources\n    | where type =~ \"microsoft.insights/components\"\n    | where tolower(tostring(properties.WorkspaceResourceId)) == tolower(\"__WORKSPACE_ID__\")\n    | summarize make_bag(bag_pack(tolower(id), tags)));\nlet selDomain = dynamic([{Domain}]);\nlet selTier = dynamic([{Tier}]);\nAppDependencies\n| where TimeGenerated {TimeRange}\n| where DependencyType !in (\"InProc\")\n| summarize Calls = count(), Failures = countif(Success == false),\n            P95ms = round(percentile(DurationMs, 95), 0),\n            Resource = take_any(tolower(_ResourceId))\n  by Caller = AppRoleName, DependencyType, Target\n| extend tg = appTags[Resource]\n| extend Domain = tostring(tg.domain), Tier = tostring(tg.criticality), Owner = tostring(tg.owner)\n| extend Domain = iff(isempty(Domain), \"untagged\", Domain)\n| where (array_length(selDomain) == 0 or Domain in (selDomain))\n    and (array_length(selTier) == 0 or Tier in (selTier))\n| extend FailureRatePct = round(100.0 * Failures / Calls, 2)\n| project Caller, ['Caller domain'] = Domain, DependencyType, Target, Calls, Failures, FailureRatePct, P95ms\n| order by Calls desc",
+        "size": 0,
+        "title": "Every dependency across all apps: one query, no workspace() joins",
+        "timeContext": {
+          "durationMs": 86400000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "^Target$",
+              "formatter": 7,
+              "formatOptions": {
+                "linkTarget": "GenericDetails",
+                "linkIsContextBlade": true
+              }
+            },
+            {
+              "columnMatch": "^Calls$",
+              "formatter": 4,
+              "formatOptions": {
+                "palette": "blue"
+              }
+            },
+            {
+              "columnMatch": "^FailureRatePct$",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "greenRed"
+              }
+            }
+          ],
+          "rowLimit": 200,
+          "filter": true
+        }
+      },
+      "name": "cross",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "cross"
+      }
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### End-to-end transactions\n\nEvery failed request in the estate, from any app. **Click a row** to rebuild the whole distributed transaction it belongs to, across every app, including the SQL and Service Bus calls.\n\nNothing extra was instrumented to make this work. The apps propagate W3C trace context, so each span already carries its own id and its parent's; the tree below reads that structure back out."
+      },
+      "name": "txn-header",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "txn"
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let appTags = toscalar(\n    arg(\"\").Resources\n    | where type =~ \"microsoft.insights/components\"\n    | where tolower(tostring(properties.WorkspaceResourceId)) == tolower(\"__WORKSPACE_ID__\")\n    | summarize make_bag(bag_pack(tolower(id), tags)));\nlet selDomain = dynamic([{Domain}]);\nlet selTier = dynamic([{Tier}]);\nAppRequests\n| where TimeGenerated {TimeRange}\n| where Success == false\n| extend Resource = tolower(_ResourceId)\n| extend tg = appTags[Resource]\n| extend Domain = tostring(tg.domain), Tier = tostring(tg.criticality), Owner = tostring(tg.owner)\n| extend Domain = iff(isempty(Domain), \"untagged\", Domain)\n| where (array_length(selDomain) == 0 or Domain in (selDomain))\n    and (array_length(selTier) == 0 or Tier in (selTier))\n| project TimeGenerated, App = AppRoleName, Domain, Operation = Name, ResultCode,\n          ['Duration ms'] = round(DurationMs, 0), OperationId, Trace = _ItemId, Resource\n| top 100 by TimeGenerated desc",
+        "size": 0,
+        "title": "Failed requests: click one to trace it",
+        "timeContext": {
+          "durationMs": 86400000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "^OperationId$",
+              "formatter": 5
+            },
+            {
+              "columnMatch": "^Trace$",
+              "formatter": 7,
+              "formatOptions": {
+                "linkTarget": "RequestDetails",
+                "linkLabel": "Details"
+              }
+            },
+            {
+              "columnMatch": "^Resource$",
+              "formatter": 7,
+              "formatOptions": {
+                "linkTarget": "Resource",
+                "linkLabel": "App Insights"
+              }
+            },
+            {
+              "columnMatch": "^Duration ms$",
+              "formatter": 4,
+              "formatOptions": {
+                "palette": "orange"
+              }
+            }
+          ],
+          "rowLimit": 100,
+          "filter": true
+        },
+        "exportFieldName": "OperationId",
+        "exportParameterName": "selectedOperation",
+        "exportDefaultValue": "",
+        "noDataMessage": "No failed requests in this time range for the selected filters."
+      },
+      "name": "txn-failures",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "txn"
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let op = \"{selectedOperation}\";\nlet spans =\n    union\n      (AppRequests | where TimeGenerated {TimeRange} | where OperationId == op\n        | project TimeGenerated, Service = AppRoleName, Kind = \"request\", Name,\n                  Target = \"\", DurationMs = round(DurationMs, 1), Success, ResultCode,\n                  Id, ParentId),\n      (AppDependencies | where TimeGenerated {TimeRange} | where OperationId == op\n        | project TimeGenerated, Service = AppRoleName, Kind = strcat(\"dep: \", DependencyType), Name,\n                  Target, DurationMs = round(DurationMs, 1), Success, ResultCode,\n                  Id, ParentId);\nlet ids = toscalar(spans | summarize make_set(Id));\nlet t0 = toscalar(spans | summarize min(TimeGenerated));\nspans\n| extend ParentId = iff(ParentId in (ids), ParentId, \"\")\n| extend Status = iff(Success, \"🟢 ok\", \"🔴 failed\")\n| project Id, ParentId, Span = Name, Service, Kind, Target,\n          ['Start +ms'] = round(datetime_diff('microsecond', TimeGenerated, t0) / 1000.0, 1),\n          ['Duration ms'] = DurationMs, Status, ResultCode\n| order by ['Start +ms'] asc",
+        "size": 0,
+        "title": "Distributed trace: the full call tree",
+        "timeContext": {
+          "durationMs": 86400000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "^Id$",
+              "formatter": 5
+            },
+            {
+              "columnMatch": "^ParentId$",
+              "formatter": 5
+            },
+            {
+              "columnMatch": "^Duration ms$",
+              "formatter": 4,
+              "formatOptions": {
+                "palette": "blue"
+              }
+            }
+          ],
+          "rowLimit": 500,
+          "hierarchySettings": {
+            "idColumn": "Id",
+            "parentColumn": "ParentId",
+            "treeType": 0,
+            "expanderColumn": "Span",
+            "expandTopLevel": true
+          }
+        }
+      },
+      "name": "txn-tree",
+      "conditionalVisibilities": [
+        {
+          "parameterName": "selectedTab",
+          "comparison": "isEqualTo",
+          "value": "txn"
+        },
+        {
+          "parameterName": "selectedOperation",
+          "comparison": "isNotEqualTo"
+        }
+      ]
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppExceptions\n| where TimeGenerated {TimeRange}\n| where OperationId == \"{selectedOperation}\"\n| project TimeGenerated, Service = AppRoleName, Type = ExceptionType,\n          Message = OuterMessage, Method = Method\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Exceptions raised in this transaction",
+        "timeContext": {
+          "durationMs": 86400000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "^Message$",
+              "formatter": 7,
+              "formatOptions": {
+                "linkTarget": "GenericDetails",
+                "linkIsContextBlade": true
+              }
+            }
+          ],
+          "rowLimit": 50
+        }
+      },
+      "name": "txn-errors",
+      "conditionalVisibilities": [
+        {
+          "parameterName": "selectedTab",
+          "comparison": "isEqualTo",
+          "value": "txn"
+        },
+        {
+          "parameterName": "selectedOperation",
+          "comparison": "isNotEqualTo"
+        }
+      ]
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Metadata quality\n\nCompares the Application Insights resources linked to this workspace with the telemetry they receive. 🔴 rows are missing a required tag, 🟠 rows are registered but silent, and 🟢 rows are healthy. This tab ignores the Domain and Criticality filters, because untagged apps have nothing to filter on."
+      },
+      "name": "meta-header",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "meta"
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let appTags = toscalar(\n    arg(\"\").Resources\n    | where type =~ \"microsoft.insights/components\"\n    | where tolower(tostring(properties.WorkspaceResourceId)) == tolower(\"__WORKSPACE_ID__\")\n    | summarize make_bag(bag_pack(tolower(id), tags)));\nlet registered =\n    print b = appTags\n    | mv-expand kind=array kv = b\n    | project Resource = tostring(kv[0]), tags = kv[1];\nlet reporting =\n    union AppRequests, AppDependencies, AppTraces\n    | where TimeGenerated {TimeRange}\n    | summarize Rows = count(), Apps = make_set(AppRoleName, 10) by Resource = tolower(_ResourceId);\nregistered\n| join kind=fullouter reporting on Resource\n| extend Resource = coalesce(Resource, Resource1)\n| extend Domain = tostring(tags.domain), Criticality = tostring(tags.criticality), Owner = tostring(tags.owner)\n| extend Missing = trim(\", \", strcat(iff(isempty(Domain), \"domain, \", \"\"),\n                                     iff(isempty(Criticality), \"criticality, \", \"\"),\n                                     iff(isempty(Owner), \"owner\", \"\")))\n| extend Finding = case(\n    isnull(Rows),        \"🟠 Registered, no telemetry in this time range\",\n    isnotempty(Missing), strcat(\"🔴 Missing tags: \", Missing),\n                         \"🟢 Registered and reporting\")\n| project Finding, Resource, Apps, Domain, Criticality, Owner, Rows = coalesce(Rows, 0)\n| order by Finding asc, Resource asc",
+        "size": 0,
+        "title": "Registrations versus telemetry",
+        "timeContext": {
+          "durationMs": 86400000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "^Resource$",
+              "formatter": 7,
+              "formatOptions": {
+                "linkTarget": "Resource",
+                "linkLabel": "App Insights"
+              }
+            }
+          ],
+          "rowLimit": 500,
+          "filter": true
+        }
+      },
+      "name": "meta",
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "meta"
+      }
+    }
+  ],
+  "fallbackResourceIds": [
+    "__WORKSPACE_ID__"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

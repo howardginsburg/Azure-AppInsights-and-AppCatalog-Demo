@@ -1,0 +1,98 @@
+[
+  {
+    "workload": "retail-web",
+    "displayName": "Retail Storefront",
+    "description": "Customer-facing storefront and backend-for-frontend.",
+    "businessOwner": "VP Digital Commerce",
+    "appUrl": "https://shop.contoso-demo.example",
+    "docsUrl": "https://wiki.contoso-demo.example/retail/storefront",
+    "runbookUrl": "https://runbooks.contoso-demo.example/retail-web",
+    "repoUrl": "https://github.com/contoso-demo/retail-web",
+    "slo": "99.9",
+    "onCall": "commerce-oncall@contoso-demo.example"
+  },
+  {
+    "workload": "retail-api-orders",
+    "displayName": "Order Management API",
+    "description": "Order placement, orchestration, and lifecycle management.",
+    "businessOwner": "VP Digital Commerce",
+    "appUrl": "https://api.contoso-demo.example/orders",
+    "docsUrl": "https://wiki.contoso-demo.example/retail/orders-api",
+    "runbookUrl": "https://runbooks.contoso-demo.example/retail-api-orders",
+    "repoUrl": "https://github.com/contoso-demo/retail-api-orders",
+    "slo": "99.9",
+    "onCall": "commerce-oncall@contoso-demo.example"
+  },
+  {
+    "workload": "retail-api-catalog",
+    "displayName": "Product Catalog API",
+    "description": "Product search, browse, and pricing lookups.",
+    "businessOwner": "Director of Merchandising",
+    "appUrl": "https://api.contoso-demo.example/catalog",
+    "docsUrl": "https://wiki.contoso-demo.example/retail/catalog-api",
+    "runbookUrl": "https://runbooks.contoso-demo.example/retail-api-catalog",
+    "repoUrl": "https://github.com/contoso-demo/retail-api-catalog",
+    "slo": "99.5",
+    "onCall": "commerce-oncall@contoso-demo.example"
+  },
+  {
+    "workload": "pay-api-gateway",
+    "displayName": "Payment Gateway",
+    "description": "Payment authorization and third-party processor integration. PCI scope.",
+    "businessOwner": "Head of Payments",
+    "appUrl": "https://api.contoso-demo.example/payments",
+    "docsUrl": "https://wiki.contoso-demo.example/payments/gateway",
+    "runbookUrl": "https://runbooks.contoso-demo.example/pay-api-gateway",
+    "repoUrl": "https://github.com/contoso-demo/pay-api-gateway",
+    "slo": "99.95",
+    "onCall": "payments-oncall@contoso-demo.example"
+  },
+  {
+    "workload": "pay-worker-settlement",
+    "displayName": "Settlement Worker",
+    "description": "Asynchronous settlement and reconciliation processing.",
+    "businessOwner": "Head of Payments",
+    "appUrl": "https://internal.contoso-demo.example/settlement",
+    "docsUrl": "https://wiki.contoso-demo.example/payments/settlement",
+    "runbookUrl": "https://runbooks.contoso-demo.example/pay-worker-settlement",
+    "repoUrl": "https://github.com/contoso-demo/pay-worker-settlement",
+    "slo": "99.5",
+    "onCall": "payments-oncall@contoso-demo.example"
+  },
+  {
+    "workload": "cust-api-profile",
+    "displayName": "Customer Profile API",
+    "description": "Customer profile, preferences, and consent management.",
+    "businessOwner": "Director of Customer Experience",
+    "appUrl": "https://api.contoso-demo.example/profile",
+    "docsUrl": "https://wiki.contoso-demo.example/customer/profile-api",
+    "runbookUrl": "https://runbooks.contoso-demo.example/cust-api-profile",
+    "repoUrl": "https://github.com/contoso-demo/cust-api-profile",
+    "slo": "99.5",
+    "onCall": "customer-oncall@contoso-demo.example"
+  },
+  {
+    "workload": "cust-worker-notify",
+    "displayName": "Notification Worker",
+    "description": "Outbound email and push notification delivery.",
+    "businessOwner": "Director of Customer Experience",
+    "appUrl": "https://internal.contoso-demo.example/notify",
+    "docsUrl": "https://wiki.contoso-demo.example/customer/notify-worker",
+    "runbookUrl": "https://runbooks.contoso-demo.example/cust-worker-notify",
+    "repoUrl": "https://github.com/contoso-demo/cust-worker-notify",
+    "slo": "99.0",
+    "onCall": "customer-oncall@contoso-demo.example"
+  },
+  {
+    "workload": "shared-api-inventory",
+    "displayName": "Inventory Service",
+    "description": "Shared stock levels and reservations. Consumed by Retail AND Payments — a failure here has cross-domain blast radius.",
+    "businessOwner": "Head of Platform Engineering",
+    "appUrl": "https://api.contoso-demo.example/inventory",
+    "docsUrl": "https://wiki.contoso-demo.example/platform/inventory",
+    "runbookUrl": "https://runbooks.contoso-demo.example/shared-api-inventory",
+    "repoUrl": "https://github.com/contoso-demo/shared-api-inventory",
+    "slo": "99.95",
+    "onCall": "platform-oncall@contoso-demo.example"
+  }
+]

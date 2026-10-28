@@ -1,123 +1,205 @@
-# Application Observability Architecture
+# Application Insights: cross-app tracing and an app catalog
 
-A design-thinking reference architecture for maximizing the value of **Azure Application Insights** and **Azure Monitor Logs (Log Analytics)** across a multi-domain application estate — ending in a unified **Application Portfolio** view.
+A deployable starter that shows two things:
 
-> **Status:** Design artifact. Technology-neutral. No assumptions about a specific codebase or existing Azure estate.
+1. **Stitching.** Separate apps (A → B → C), each with its own Application Insights resource, produce *one* end-to-end transaction: requests, HTTP calls, database and queue calls, exceptions, and logs. W3C trace context ties the spans together, and one shared Log Analytics workspace puts them all in reach of a single query.
+2. **The app catalog.** *Estate Atlas*, a small web app, draws the observed dependency graph from that telemetry, classifies every app from its Azure tags, and holds business context: what an app is for, its business owner, SLO, runbook, and on-call.
 
----
+A portfolio workbook shows the same estate inside the Azure portal. A telemetry simulator supplies data for eight demo apps without deploying real workload services. The catalog platform itself uses real Azure resources.
 
-## The four questions this architecture answers
+## What you'll see
 
-| Question | Answer | Detail |
-|---|---|---|
-| Multiple App Insights based on business domains? | **No — split by _workload_ per _environment_.** Domain is a *label*, not a resource boundary. | [02 — Resource Topology](./02-resource-topology.md) |
-| Multiple Log Analytics, or a single shared one? | **Start from one, for the whole estate.** Microsoft's own guidance: *"your design should use the fewest number of workspaces to meet your requirements."* Split only against documented criteria — and note that a different Azure region is **not** one of them absent a residency need. | [02 — Resource Topology](./02-resource-topology.md) |
-| How do I get end-to-end flows including database calls? | **OpenTelemetry + W3C trace context**, uniform `service.name`, sanitized DB dependency spans. | [03 — Telemetry Flow](./03-telemetry-flow.md) |
-| Does Microsoft Fabric add value here? | **Yes — at the portfolio/analytics layer only.** It removes the Azure-RBAC ceiling for business audiences and enables blending with CMDB, cost, and DevOps data. It is an anti-pattern for diagnosis or alerting. | [10 — Fabric Integration](./10-fabric-integration.md) |
+![Estate Atlas running in Azure, with the dependency graph and the inventory service's tags, business context, and telemetry](docs/images/estate-atlas.png)
 
----
+*The Azure-hosted catalog, with one app selected. Classification comes from tags; business context comes from SQL; traffic and health come from telemetry.*
 
-## Document map
+![Application Portfolio workbook in the Azure portal, with domains expanded into their apps](docs/images/azure-workbook-portfolio.png)
 
-| # | Document | What it covers |
-|---|---|---|
-| 01 | [Architecture Principles](./01-architecture-principles.md) | The 12 non-negotiable design principles and the tradeoffs behind them |
-| 02 | [Resource Topology](./02-resource-topology.md) | App Insights and Log Analytics boundaries, decision trees, sizing |
-| 03 | [Telemetry Flow](./03-telemetry-flow.md) | End-to-end distributed trace flows, correlation, database dependencies |
-| 04 | [C# Instrumentation Guide](./04-csharp-instrumentation.md) | **Working C# code** — wiring end-to-end tracing across apps, APIs, databases, and queues |
-| 05 | [Domain Model & Taxonomy](./05-domain-model.md) | Business domains, workloads, components, the metadata contract |
-| 06 | [Application Portfolio](./06-application-portfolio.md) | The portfolio hub: inventory + health + links to apps, docs, runbooks |
-| 07 | [Service Responsibilities](./07-service-responsibilities.md) | **What Azure gives you vs. what you must custom build** |
-| 08 | [Implementation Roadmap](./08-implementation-roadmap.md) | Phased delivery plan, pilot criteria, maturity model |
-| 09 | [Verification Log](./09-verification-log.md) | **Every claim checked against Microsoft docs** — corrections made and confidence levels |
-| 10 | [Fabric Integration](./10-fabric-integration.md) | **Does Microsoft Fabric add value?** The two-speed architecture, three integration paths, constraints, and anti-patterns |
+*The portfolio workbook groups the same observed apps by domain. These are captures of a deployed demo, not mockups; counts and health depend on the selected time range. See the [guided tour](demo/README.md#guided-tour) for the transaction view.*
 
-### Beyond the design docs
-
-| Artifact | What it is |
-|---|---|
-| [`demo/`](./demo/README.md) | **A deployable, working demo of this architecture.** One resource group, 8 Application Insights resources, 1 Log Analytics workspace, and a synthetic telemetry simulator that produces real Application Maps, real end-to-end transactions including database calls, and a real portfolio Workbook — with no application services deployed. Includes a guided 10-stop tour. Costs approximately nothing and tears down with one command. |
-| [`demo/simulator/ARCHITECTURE.md`](./demo/simulator/ARCHITECTURE.md) | **How the telemetry simulator works.** The build-then-emit trace model, one OTel pipeline per simulated service, how spans and logs are back-dated for a 24-hour backfill, the OpenTelemetry-attribute-to-Application-Insights-column mapping (verified against the live workspace), and how incidents are injected. |
-| `deck/` | Customer-facing PowerPoint deck (`Application-Observability-Architecture.pptx`), generated from `build-deck.cjs`. **Not tracked in this repository** — it is a large binary with its own review cycle, and is kept alongside the working copy. Edit the generator script and re-run it rather than editing the `.pptx` by hand. |
-
----
-
-## The big picture
+## How it fits together
 
 ```mermaid
-flowchart TB
-    subgraph L1["1 — Instrument"]
-        A1["OpenTelemetry SDK<br/>+ autoinstrumentation"]
-        A2["W3C traceparent<br/>propagation"]
-        A3["Resource attributes<br/>service.name / env / domain"]
+flowchart LR
+    subgraph apps["Your apps (OpenTelemetry)"]
+        A["App A"] -->|"traceparent"| B["App B"] -->|"traceparent"| C["App C"]
     end
+    A --> AIA["App Insights: A<br/>tags: domain, criticality, owner"]
+    B --> AIB["App Insights: B<br/>tags: domain, criticality, owner"]
+    C --> AIC["App Insights: C<br/>tags: domain, criticality, owner"]
+    AIA --> LAW[("Log Analytics workspace<br/>one, shared")]
+    AIB --> LAW
+    AIC --> LAW
+    LAW --> WB["Portfolio workbook"]
+    LAW --> CAT["Estate Atlas catalog app"]
+    SQL[("Azure SQL<br/>business context")] --> CAT
 
-    subgraph L2["2 — Collect"]
-        B1["Application Insights<br/>one per workload per env"]
-        B2["Diagnostic Settings<br/>Azure resource logs"]
-        B3["Data Collection Rules<br/>VM / hybrid agents"]
-    end
-
-    subgraph L3["3 — Store"]
-        C1["Log Analytics Workspace<br/>start at one; split only<br/>on documented criteria"]
-        C2["Azure Monitor Metrics<br/>platform + custom"]
-    end
-
-    subgraph L4["4 — Analyze"]
-        D1["Application Map"]
-        D2["Transaction Diagnostics"]
-        D3["KQL Query Packs"]
-        D4["Alerts + SLO burn rate"]
-    end
-
-    subgraph L5["5 — Present"]
-        E1["Workload Workbook"]
-        E2["APPLICATION PORTFOLIO HUB"]
-    end
-
-    subgraph L6["Cross-cutting Governance"]
-        G1["Taxonomy + Tags"]
-        G2["Azure Policy"]
-        G3["RBAC + Private Link"]
-        G4["Cost + Retention"]
-    end
-
-    L1 --> L2 --> L3 --> L4 --> L5
-    C3["Azure Resource Graph<br/>inventory + tags"] --> E2
-    C4["Service Catalog<br/>URLs / docs / owners"] --> E2
-    L6 -.governs.-> L2
-    L6 -.governs.-> L3
-    L6 -.governs.-> L5
+    style LAW fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
+    style WB fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    style CAT fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    style SQL fill:#ffe6cc,stroke:#d79b00,color:#1a1a1a
 ```
 
----
+There is no central list of apps. An app joins the estate when its Application Insights resource is linked to the shared workspace and tagged with `domain`, `criticality`, and `owner`. Every telemetry row records the resource that received it, so the workbook and the catalog app read those tags at query time.
 
-## Architecture in one paragraph
+## What's configuration and what's code
 
-Instrument every service with **OpenTelemetry** so a single request carries one `operation_Id` from browser to gateway to service to database to background worker. Land that telemetry in **one Application Insights resource per workload per environment** — small enough to keep Application Map readable, large enough that a whole user journey stays in one place. Point many Application Insights resources at **as few Log Analytics workspaces as your requirements allow — starting from one**, splitting only against documented criteria such as Entra tenant, data residency, legal-entity ownership, split billing, same-table retention, access control, or deliberate resilience. Above that, build one **Application Portfolio workbook** that joins **Azure Resource Graph** inventory with live telemetry, resource health, and a **curated service catalog** supplying the things Azure does not know: app URLs, internal documentation, runbooks, repositories, and business owners.
-
----
-
-## What is Azure-native vs. custom build (summary)
-
-| | Azure gives you | You must build |
+| What | Where it lives | Who changes it |
 |---|---|---|
-| **Instrumentation** | OTel distros, autoinstrumentation, auto DB dependency capture | Trace propagation for custom protocols, redaction rules, business event schema |
-| **Storage** | App Insights, Log Analytics, table plans, retention | Workspace topology decisions, table plan policy |
-| **Analysis** | App Map, Transaction Diagnostics, Failures/Performance blades | KQL query pack, SLO definitions, burn-rate alert logic |
-| **Presentation** | Workbooks engine, Resource Graph, link actions, merge control; Fabric/Power BI for non-RBAC audiences | **The portfolio workbook itself**, catalog sync, metadata quality reporting, **the semantic model and its measures** |
-| **Governance** | Azure Policy, RBAC, Private Link, DCRs | Taxonomy, tag standard, onboarding scorecard, chargeback reporting |
+| Resource group and region | `RG` and `LOCATION` environment variables (defaults in [`lib/common.sh`](lib/common.sh)) | You, once |
+| An app's classification | `domain`, `criticality`, and `owner` tags on its Application Insights resource | The app team, with [`add-app.sh`](add-app.sh) or their own infrastructure as code |
+| An app's identity in telemetry | `OTEL_SERVICE_NAME` and `APPLICATIONINSIGHTS_CONNECTION_STRING` in the app | The app team |
+| Business context | The catalog app's UI or API | The app owner |
+| Tag names, queries, workbook, catalog schema, SKUs | This repo | Rarely |
+| The demo apps, their tags, catalog seed, flows, and incidents | [`demo/`](demo/README.md) | Optional sample data. Use `DEMO=false` for a platform-only deployment |
 
-Full breakdown: [07 — Service Responsibilities](./07-service-responsibilities.md) · Working code: [04 — C# Instrumentation Guide](./04-csharp-instrumentation.md)
+## Quick start
 
----
+You need:
 
-## Primary Microsoft references
+- An Azure subscription and permission to deploy resources and grant the catalog app's role. For an existing resource group, use **Owner**, or **Contributor** plus **Role Based Access Control Administrator**, at that scope. Creating a new group also requires resource-group creation permission at subscription scope; otherwise, have an administrator create the dedicated group first.
+- Bash: Linux, macOS, WSL, Git Bash, or Azure Cloud Shell. The commands below are Bash, not native PowerShell.
+- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) with a current Bicep (`az bicep upgrade`).
+- curl.
+- [.NET 10 SDK](https://dotnet.microsoft.com/download) to run the simulator.
+- Node.js 24 and npm, to build the catalog app and the workbook. The minimum patch version is in the catalog app's [`package.json`](standalone-catalog-graph/package.json), and npm enforces it.
 
-- [Architecture best practices for Application Insights](https://learn.microsoft.com/azure/well-architected/service-guides/application-insights)
-- [Best practices for Azure Monitor Logs](https://learn.microsoft.com/azure/azure-monitor/best-practices-logs)
-- [Create and configure workspace-based Application Insights resources](https://learn.microsoft.com/azure/azure-monitor/app/create-workspace-resource)
-- [Dependency tracking in Application Insights](https://learn.microsoft.com/azure/azure-monitor/app/dependencies)
-- [Azure Workbooks data sources](https://learn.microsoft.com/azure/azure-monitor/visualize/workbooks-data-sources)
-- [Azure Workbooks link actions](https://learn.microsoft.com/azure/azure-monitor/visualize/workbooks-link-actions)
-- [Query across multiple workspaces and apps](https://learn.microsoft.com/azure/azure-monitor/logs/cross-workspace-query)
+> [!WARNING]
+> **The catalog UI and API are anonymous by default.** Anyone who can reach the URL can read the exposed telemetry and business context and edit the catalog. Use synthetic data for this demo. Add [App Service authentication](https://learn.microsoft.com/azure/app-service/overview-authentication-authorization) or appropriate network access controls before using real data.
+
+Start in Bash:
+
+```bash
+git clone https://github.com/howardginsburg/Azure-AppInsights-and-AppCatalog-Demo.git
+cd Azure-AppInsights-and-AppCatalog-Demo
+
+az login
+az account set --subscription "<subscription-name-or-id>"
+
+# Choose a dedicated group. Keep these exports for all later commands.
+export RG="my-observability-dev"
+export LOCATION="centralus"
+az account show --query '{subscription:name, id:id}' --output table
+
+./deploy.sh
+```
+
+The deployment registers the demo apps and writes their simulator settings. Before generating failures, review the [simulator alert warning](demo/README.md#run-it). Then, still at the repository root:
+
+```bash
+(cd demo/simulator && dotnet run -c Release -- --backfill-hours 24)
+```
+
+The parentheses keep your shell at the repository root. Open the workbook and catalog links printed by the deployment. Allow for ingestion and component discovery, check [what success looks like](demo/README.md#check-it-worked), then follow the [guided tour](demo/README.md#guided-tour).
+
+| Setting | Purpose |
+|---|---|
+| `RG`, `LOCATION` | Target group and region; defaults are defined in [`lib/common.sh`](lib/common.sh) |
+| `APP_LOCATION`, `SQL_LOCATION` | Optional regional overrides when capacity differs; otherwise resources use `LOCATION` |
+| `DEMO` | Includes the demo unless set to `false` |
+
+Use the same subscription and exported `RG` for deployment, adding apps, and cleanup. In a new terminal, set them again before running any scripts.
+
+For a clean platform without sample registrations or catalog entries:
+
+```bash
+DEMO=false ./deploy.sh
+```
+
+This skips demo setup; it does not delete demo resources, catalog rows, or telemetry from an earlier deployment. Keep the demo files in the checkout. Re-running the deployment converges the infrastructure, redeploys the app, and, when included, imports only demo catalog entries that do not already exist.
+
+Deploy separate resource groups and platform instances for development and production. Each has its own workspace, workbook, and catalog; this starter does not provide a combined-environment view. See [environment boundaries](docs/01-topology.md#one-environment-per-deployment).
+
+## Add your own app
+
+From the repository root, with the same exported `RG`:
+
+```bash
+./add-app.sh orders-api --domain Sales --criticality tier1 --owner sales-team
+```
+
+This creates a tagged Application Insights resource linked to the shared workspace and prints the two settings the app needs:
+
+```text
+OTEL_SERVICE_NAME=orders-api
+APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=...
+```
+
+Set them in the application's runtime environment, add the [Microsoft OpenTelemetry Distro](https://learn.microsoft.com/azure/azure-monitor/app/opentelemetry-enable), and initialize it:
+
+```csharp
+using Microsoft.OpenTelemetry;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.UseMicrosoftOpenTelemetry(options => options.Exporters = ExportTarget.AzureMonitor);
+```
+
+Instrumented HTTP calls propagate trace context. Queue behavior depends on the SDK and consumer; see [End-to-end correlation](docs/02-end-to-end-correlation.md). Registration alone appears in **Metadata quality**. Once request or processing telemetry arrives within the selected time range, the app appears in the graph. Select it and choose **Add to catalog** to record optional business context.
+
+Using your own infrastructure as code? Copy [`infra/modules/app.bicep`](infra/modules/app.bicep). It's the whole registration contract: a workspace-based Application Insights resource with three tags.
+
+## What gets deployed
+
+| Resource | Purpose |
+|---|---|
+| Log Analytics workspace | Every app's telemetry. 30-day retention and a 1 GB daily cap |
+| Workbook *Application Portfolio* | Health by domain, estate map, transactions, metadata quality |
+| App Service plan (B1, Linux) and web app | The catalog app, with a system-assigned managed identity |
+| Azure SQL server and Basic database | Catalog business context. Microsoft Entra authentication only, public access disabled |
+| Virtual network, private endpoint, private DNS zone, network security groups | Private path from the web app to SQL |
+| Role assignment | Log Analytics Reader on the resource group, for queries and reading tags |
+| Application Insights resources | One per app: 8 for the demo, plus any you add |
+
+The catalog backend uses managed identity to query Log Analytics, read resource tags, and access SQL; it needs no SQL password or storage account. Telemetry producers use Application Insights connection strings containing an instrumentation key, which identifies the destination resource, not a SQL credential. This starter does not configure Microsoft Entra-authenticated telemetry ingestion. Browser access is separate from backend identity and remains anonymous until you protect it.
+
+## Cost and clean-up
+
+Azure Monitor bills on ingestion, and the demo's event volume is small. The catalog's App Service plan, SQL database, and private endpoint incur ongoing charges even when the simulator is stopped. The workspace daily ingestion cap is not an overall spending limit or a guarantee against overshoot; review [Azure Monitor daily caps](https://learn.microsoft.com/azure/azure-monitor/logs/daily-cap).
+
+From the repository root, confirm the subscription and the same exported `RG`, then:
+
+```bash
+./teardown.sh
+```
+
+The script asks you to type the group name, **force-deletes the group's Log Analytics workspaces and their data**, and requests deletion of the entire resource group in the background. That includes apps added later and any unrelated resources placed there. It also removes the local simulator environment file. Do not use a shared group for this starter. To remove just one sample registration, follow [tour stop 9](demo/README.md#9-register-an-app-yourself).
+
+## Scope and publishing
+
+This is a deployable learning starter, not a production service catalog or a comprehensive instrumentation tutorial. The snippets focus on .NET; other languages can use the same resource/tag and trace-context contract. Multi-workspace aggregation, combined environments, SLO enforcement, and production authentication/authorization are not implemented here.
+
+For questions or reproducible problems, use this repository's [GitHub issues](https://github.com/howardginsburg/Azure-AppInsights-and-AppCatalog-Demo/issues). Include the command, symptom, and sanitized logs; never include connection strings, tokens, or real customer telemetry.
+
+Before publishing a fork:
+
+- Include new files and obsolete-file deletions together, including the screenshots. Do not publish local environment files or build outputs.
+- Preserve executable permissions on the scripts: `git add --chmod=+x deploy.sh add-app.sh teardown.sh demo/setup.sh lib/common.sh`.
+- Review the quick start from a clean checkout and confirm the doc links, target subscription/group, runtime requirements, and teardown warning.
+- Capture only synthetic data in screenshots, excluding account details and credentials. Screenshots are examples, not a source of configuration or expected exact counts.
+
+## Repository layout
+
+```text
+deploy.sh, add-app.sh, teardown.sh   Deploy the platform, register an app, delete everything
+lib/common.sh                        Settings and helpers shared by the scripts
+infra/main.bicep                     Workspace, workbook, catalog app, SQL, network, role
+infra/modules/app.bicep              One app: a tagged Application Insights resource
+workbook/                            Workbook generator, its map query, and the generated JSON
+standalone-catalog-graph/            Estate Atlas, the catalog app (React, Express, Azure SQL)
+demo/                                Demo apps, catalog seed, and the telemetry simulator
+docs/                                The three guides below
+```
+
+## Learn more
+
+| Guide | Covers |
+|---|---|
+| [Topology](docs/01-topology.md) | One Application Insights resource per app, one shared workspace, and when to split |
+| [End-to-end correlation](docs/02-end-to-end-correlation.md) | How A → B → C stitch, with C# snippets and the KQL to read a trace back |
+| [Catalog and workbook](docs/03-catalog-and-workbook.md) | Tags, the workbook's tabs, the catalog app, and their limits |
+| [Demo guide](demo/README.md) | Running the simulator and a guided tour |
+| [Catalog app](standalone-catalog-graph/README.md) | Architecture, API, and local development |
+
+## License
+
+[MIT](LICENSE)

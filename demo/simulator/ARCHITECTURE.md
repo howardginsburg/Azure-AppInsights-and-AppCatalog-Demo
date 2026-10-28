@@ -1,26 +1,26 @@
 # Simulator Architecture
 
-How the synthetic telemetry generator is built, and how a span travels from a C# object
-to a row in a Log Analytics table.
+Optional implementation notes for changing the synthetic telemetry generator: how a span travels
+from a C# object to a row in a Log Analytics table. You do not need this document to run the demo.
 
 > **This is not an instrumentation reference.** The simulator does the opposite of what a real
 > application does: a real app is instrumented *incidentally* while doing work, whereas this
 > program does no work and emits telemetry *deliberately*. For how to instrument a real service,
-> see [`04-csharp-instrumentation.md`](../../04-csharp-instrumentation.md). For how to *run* the
+> see [End-to-end correlation](../../docs/02-end-to-end-correlation.md). For how to *run* the
 > demo, see [`demo/README.md`](../README.md).
 
 **Contents**
 
 | Section | What it covers |
 |---|---|
-| [1. The central bet](#1-the-central-bet) | Why synthetic telemetry is indistinguishable from real telemetry |
+| [1. The central bet](#1-the-central-bet) | What synthetic telemetry can and cannot demonstrate |
 | [2. Component map](#2-component-map) | The four source files and what each owns |
 | [3. Build first, emit second](#3-build-first-emit-second) | The single most important design decision |
 | [4. End-to-end data flow](#4-end-to-end-data-flow) | Config → plan → tree → SDK → ingestion → tables |
 | [5. Pipeline isolation](#5-pipeline-isolation-one-provider-per-service) | Why there are eight of everything |
 | [6. Anatomy of a trace](#6-anatomy-of-a-trace-checkout) | The checkout span tree |
 | [7. Back-dating](#7-back-dating-the-hard-part) | Two different mechanisms, and why |
-| [8. Attribute mapping](#8-attribute-mapping-otel--application-insights) | OTel attributes → App Insights columns |
+| [8. Modelling decisions](#8-modelling-decisions) | Where the simulator follows real SDKs, and the one place it doesn't |
 | [9. Scenario injection](#9-scenario-injection) | How incidents are placed in time |
 | [10. Backfill vs live mode](#10-backfill-vs-live-mode) | Two loops, one traffic mix |
 | [11. Lifecycle and flushing](#11-lifecycle-and-flushing) | Flush vs Dispose, and the bug that taught us |
@@ -38,12 +38,13 @@ whether a service actually exists.
 
 So the bet is:
 
-> If the telemetry is correctly shaped and correctly correlated, Azure cannot tell the
-> difference between a synthetic estate and a real one.
+> Correctly shaped, correlated synthetic spans can exercise the same telemetry ingestion and
+> visualization paths as real workload spans.
 
-That bet is what makes the demo nearly free. There is no App Service, no AKS, no SQL Database,
-no Service Bus namespace — only eight metadata-only Application Insights resources, one Log
-Analytics workspace, and this console app.
+The simulated estate needs no real workload compute, databases, or brokers. The overall starter
+still deploys the catalog's App Service, SQL database, and private networking, along with the
+workspace and Application Insights resources. Those are real, billable resources; see
+[cost and clean-up](../../README.md#cost-and-clean-up).
 
 ```mermaid
 flowchart LR
@@ -51,7 +52,7 @@ flowchart LR
         R1["8 services<br/>deployed and running"] --> R2["SDK observes<br/>work as it happens"]
     end
     subgraph sim["This simulator"]
-        S1["1 console process<br/>nothing deployed"] --> S2["Spans authored<br/>deliberately"]
+        S1["1 console process<br/>no real workload services"] --> S2["Spans authored<br/>deliberately"]
     end
     R2 --> AI["Application Insights<br/>ingestion"]
     S2 --> AI
@@ -65,9 +66,11 @@ flowchart LR
     style MAP fill:#e1d5e7,stroke:#9673a6,color:#1a1a1a
 ```
 
-The one thing the simulator cannot fake is anything Azure derives from the *resource* rather
-than from telemetry — Live Metrics needs a live process (which is why `--live` exists), and
-Profiler and Snapshot Debugger need a real runtime. Everything else behaves identically.
+The generator does not validate real network propagation, SQL statements, or broker behavior.
+Its `--live` loop emits current-time spans and logs; it does not configure a Live Metrics
+collector. Profiling and other runtime-specific experiences also need appropriate real-app
+instrumentation. The simulator's explicit parent-context wiring is not evidence that a
+customer's integrations will propagate context automatically.
 
 ---
 
@@ -77,7 +80,7 @@ Four files, each with one job.
 
 ```mermaid
 flowchart TD
-    ENV[".env<br/>8 connection strings<br/><i>written by deploy.sh</i>"]
+    ENV[".env<br/>8 connection strings<br/><i>written by demo/setup.sh</i>"]
 
     subgraph prog["Program.cs — orchestration"]
         ARGS["Argument parsing<br/>and validation"]
@@ -94,7 +97,7 @@ flowchart TD
     end
 
     subgraph estate["Estate.cs — emission"]
-        SVC["Services[]<br/>workload → domain → env var"]
+        SVC["Services[]<br/>workload → env var"]
         PROV["8 TracerProviders<br/>8 LoggerFactories"]
         EMIT["Emit()<br/>walks the tree, starts real Activities"]
     end
@@ -172,7 +175,7 @@ A single trace, from configuration to a queryable row:
 
 ```mermaid
 flowchart TD
-    A["<b>deploy.sh</b><br/>creates 8 App Insights resources<br/>writes .env"]
+    A["<b>demo/setup.sh</b><br/>registers 8 apps from apps.bicep<br/>writes .env"]
     B["<b>LoadEnv()</b><br/>reads .env; real env vars win"]
     C["<b>BuildPlan()</b><br/>hours × tracesPerHour, jittered,<br/>with a day/night traffic shape"]
     D["<b>Scenario.At()</b><br/>is this timestamp inside<br/>an incident window?"]
@@ -211,7 +214,7 @@ foreach (var child in node.Children)
 
 Because the child's `ActivitySource` belongs to a *different* service with a *different*
 exporter and a *different* connection string, this one line is what produces a trace that spans
-eight Application Insights resources. The `traceId` is inherited; the `parentSpanId` points at a
+multiple Application Insights resources. The `traceId` is inherited; the `parentSpanId` points at a
 span that was written to a different resource entirely. Transaction diagnostics reassembles it
 at query time.
 
@@ -233,9 +236,9 @@ flowchart LR
         AS --> TP --> TE
         LF --> LE
     end
-    TE --> AI["App Insights resource<br/><i>ai-retail-web</i>"]
+    TE --> AI["App Insights resource<br/><i>appi-retail-web</i>"]
     LE --> AI
-    AI --> WS["Log Analytics<br/><i>log-obsdemo</i>"]
+    AI --> WS["Log Analytics<br/><i>the shared workspace</i>"]
 
     style one fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
     style AI fill:#ffe6cc,stroke:#d79b00,color:#1a1a1a
@@ -259,7 +262,7 @@ real instrumentation running in the same process.
 .AddAzureMonitorTraceExporter(o =>
 {
     o.ConnectionString = cs;
-    o.TracesPerSecond  = null;   // exporter 1.8.x defaults to rate-limited sampling at 5/sec
+    o.TracesPerSecond  = null;   // the exporter defaults to rate-limited sampling at 5/sec
     o.SamplingRatio    = 1.0f;
 })
 .SetSampler(new AlwaysOnSampler())   // AFTER the exporter, so this is the one that survives
@@ -329,8 +332,7 @@ caller and a `Server` span owned by the callee. That is what real HTTP instrumen
 and it is what lets Application Map show a directed edge with latency measured from both sides.
 
 **Database calls are leaves.** A SQL span hangs off the service that issued it. The database is
-never an intermediate hop, because a database does not call anything back. (An earlier draft of
-the customer deck got this wrong and had to be corrected.)
+never an intermediate hop, because a database does not call anything back.
 
 **The third party has no server side.** `api.globalpayments-example.com` gets a `Client` span and
 nothing else. It renders on the map as an observed node with no server telemetry — showing
@@ -399,56 +401,36 @@ Two details worth noting:
   `finally`. It is a scoped hand-off to the processor, not ambient state.
 - **Trace correlation needs no help at all.** The OpenTelemetry `ILogger` provider reads
   `Activity.Current`, and `EmitLogs` runs while the synthetic span is current — so `TraceId` and
-  `SpanId` are already right. This is what makes Stop 5 of the guided tour work: click a trace,
-  see its log lines.
+  `SpanId` are already right. [Tour stop 6](../README.md#6-logs-in-the-transaction) shows logs
+  from different apps sharing the same operation ID.
 
 ---
 
-## 8. Attribute mapping: OTel → Application Insights
+## 8. Modelling decisions
 
 `Flows.cs` follows **current stable OpenTelemetry semantic conventions**, and span names follow
-what today's Azure and OTel .NET instrumentation libraries actually emit. The goal is that the
-resulting rows are indistinguishable from a real .NET app built with current SDKs.
+the instrumentation shapes modeled in this starter. These are authored examples, not certification
+of every current SDK or integration. Which span kind lands in which
+table, and how attributes become columns, is in
+[End-to-end correlation](../../docs/02-end-to-end-correlation.md#what-lands-where).
 
-| Span shape | Key attributes | Lands in | `DependencyType` |
-|---|---|---|---|
-| `Server` HTTP | `http.request.method`, `url.path`, `http.route`, `http.response.status_code` | `AppRequests` | — |
-| `Consumer` queue | `messaging.system`, `messaging.operation.type = process` | `AppRequests` | — |
-| `Client` HTTP | `http.request.method`, `url.full`, `server.address` | `AppDependencies` | `HTTP` |
-| SQL | `db.system.name = microsoft.sql_server`, `db.namespace`, `db.query.text`, `db.operation.name`, `db.collection.name` | `AppDependencies` | `SQL` |
-| Redis | `db.system.name = redis` | `AppDependencies` | `redis` |
-| Cosmos DB | `db.system.name = cosmosdb`, `az.namespace = Microsoft.DocumentDB` | `AppDependencies` | `cosmosdb` |
-| `Producer` queue | `messaging.system = servicebus`, `az.namespace = Microsoft.ServiceBus`, `messaging.destination.name` | `AppDependencies` | `servicebus` |
-| Exception event | `exception.type`, `exception.message`, `exception.stacktrace` | `AppExceptions` | — |
-| `ILogger` call | template + args, `TraceId`/`SpanId` from `Activity.Current` | `AppTraces` | — |
-| `service.name` | resource attribute | every table | `AppRoleName` |
-
-> **Span kind decides the table, not the protocol.** `ActivityKind.Server` and
-> `ActivityKind.Consumer` both become `AppRequests`; `Client` and `Producer` both become
-> `AppDependencies`. This is why the queue hop works: `pay-api-gateway` records a *dependency* on
-> `settlement-queue`, and `pay-worker-settlement` records a *request* named
-> `ServiceBusProcessor.ProcessMessage` — the same shape a real consumer produces.
-
-The values above are not inferred from documentation — they were read back out of the demo
-workspace with `AppDependencies | summarize by DependencyType, Target`. Note that `redis` and
-`servicebus` arrive **lowercase**, exactly as the attribute was written, because the exporter
+The dependency types were read back out of a demo workspace with
+`AppDependencies | summarize by DependencyType, Target`, not inferred from documentation. `redis`
+and `servicebus` arrive **lowercase**, exactly as the attribute was written, because the exporter
 passes systems it does not specially recognise through verbatim.
 
 Four modelling decisions deserve their own note.
 
-**SQL text is captured and sanitized.** `OpenTelemetry.Instrumentation.SqlClient` 1.12.0-beta.3+
-removed `SetDbStatementForText`, so `db.query.text` is now *always* captured — a modern app does
-populate `Data` for SQL dependencies. Since 1.11.0-beta.1 the captured text is also sanitized,
-with literal values replaced by `?`. The simulator's statements are valid and parameterized, so
-the demo *models* the redaction rule from [`03-telemetry-flow.md`](../../03-telemetry-flow.md)
-rather than violating it.
+**SQL text is modeled as parameterized.** The simulator includes `db.query.text` without
+customer literals, producing the `Data` field on SQL dependencies. Real applications should
+review the capture and sanitization behavior of their chosen instrumentation version before
+collecting statements.
 
-**Cosmos DB deliberately diverges from the spec.** The current OTel registry value is
-`azure.cosmosdb`, but the Cosmos .NET SDK has not adopted it, and the exporter passes unknown db
-systems through verbatim. Emitting the spec value would produce a `DependencyType` that appears
-in no real production app's data today. Since this simulator exists to mirror what a real
-deployment produces, it follows the SDK and emits `cosmosdb`. This is the only intentional
-divergence in *attribute values*, and it is commented as such in `Flows.cs`.
+**Cosmos DB follows the SDK shape modeled here.** The simulator emits `cosmosdb` rather than the
+registry value `azure.cosmosdb`, to match the .NET SDK output used for this example. The exporter
+passes unrecognized database system values through, so choosing the registry value alone can
+change the resulting `DependencyType`. The choice is documented in `Flows.cs`; verify actual
+rows when changing instrumentation or exporter versions.
 
 **Service Bus span names follow the SDK, not the convention.** `Azure.Messaging.ServiceBus` names
 its spans after the client operation (`ServiceBusSender.Send`), not the generic
@@ -457,12 +439,12 @@ its spans after the client operation (`ServiceBusSender.Send`), not the generic
 
 **Queue correlation is modelled as parent-child.** This is a divergence in *behaviour* rather
 than in attribute values, and it is the one place where the simulator shows you the destination
-rather than the default. The real `Azure.Messaging.ServiceBus` SDK uses span **links** and starts
-a new trace on the consumer side, so producer and consumer land in two separate traces. The
+rather than the default. SDK receive paths can use span **links** and start
+a new trace on the consumer side, so producer and consumer can land in separate traces. The
 simulator instead nests the consumer under the producer, which is the outcome you get after
-following the manual context-propagation guidance in
-[`04-csharp-instrumentation.md`](../../04-csharp-instrumentation.md) — and it is what makes a
-single `operation_Id` span the whole checkout, worker included.
+following the context-propagation guidance in
+[End-to-end correlation](../../docs/02-end-to-end-correlation.md#3-queues-carry-the-context-in-the-message)
+— and it is what makes a single `operation_Id` span the whole checkout, worker included.
 
 > **A note on `AppDependencies.Name`.** Azure Monitor's OTel exporter prepends `SQL: ` to the name
 > when it classifies a dependency as `DependencyType` `SQL`. A span named `INSERT dbo.Orders`
@@ -594,7 +576,7 @@ backfill and live mode; factory disposal happens exactly once, in `Dispose()`.
 | `Stop()` overwrites duration only when it is zero | `SetEndTime` must be called before `Stop()` |
 | Logs Bridge API is `internal` in the stable package | Back-dating requires `BackdateLogProcessor` rather than a timestamp argument |
 | Application Map needs `cloud_RoleName` | `service.name` set per provider via `ResourceBuilder.AddService` |
-| Cross-resource queries cap at 100 resources | Eight is comfortable; the README explains why the number matters |
+| Cross-resource queries cap at 100 resources | Not a factor: every app writes to one workspace, so queries read its tables directly |
 | Cross-component map uses progressive discovery | First load takes a few minutes; the guided tour narrates this rather than treating it as a bug |
 
 The simulator also **fails loudly** in two places where silence would waste an afternoon:
@@ -606,9 +588,10 @@ producing a trace with holes in it.
 
 ## 13. Extending it
 
-**Add a service.** Append to `Estate.Services`, add the matching `APPINSIGHTS_*` resource in
-`deploy.sh`, and reference the new workload name from a flow. The provider, logger and exporter
-are all constructed from the roster automatically.
+**Add a service.** Append to `Estate.Services`, register the app in
+[`demo/apps.bicep`](../apps.bicep), run `demo/setup.sh` to write its connection string to `.env`,
+and reference the new workload name from a flow. The provider, logger and exporter are all
+constructed from the roster automatically.
 
 **Add a flow.** Write a `public static SpanNode` builder in `Flows.cs` using the existing span
 helpers, then add it to the `PickFlow` switch with a probability. Backfill and live mode both
@@ -624,7 +607,7 @@ Check the exporter's known-systems set first: recognised values get a friendly `
 and unknown ones pass through verbatim.
 
 Always verify with `--dry-run` before sending. It builds the full plan and prints traces by flow,
-spans by service, spans by domain, and backing-service call counts — without touching the network.
+spans by service, and backing-service call counts — without touching the network.
 
 ---
 
@@ -632,8 +615,7 @@ spans by service, spans by domain, and backing-service call counts — without t
 
 | Document | What it covers |
 |---|---|
-| [`demo/README.md`](../README.md) | Running the demo, the guided tour, teardown |
-| [`04-csharp-instrumentation.md`](../../04-csharp-instrumentation.md) | How to instrument a **real** service |
-| [`03-telemetry-flow.md`](../../03-telemetry-flow.md) | Correlation, redaction, and the telemetry contract |
-| [`02-resource-topology.md`](../../02-resource-topology.md) | Why one resource per workload and one workspace |
-| [`05-domain-model.md`](../../05-domain-model.md) | The taxonomy the resource tags implement |
+| [`demo/README.md`](../README.md) | Running the demo, the guided tour, clean-up |
+| [End-to-end correlation](../../docs/02-end-to-end-correlation.md) | How to instrument a **real** app so its traces and logs stitch |
+| [Topology](../../docs/01-topology.md) | Why one resource per app and one workspace |
+| [Catalog and workbook](../../docs/03-catalog-and-workbook.md) | How tags and the catalog classify what the telemetry shows |

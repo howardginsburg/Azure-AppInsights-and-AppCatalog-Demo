@@ -40,7 +40,7 @@ public static class Program
                      --backfill-hours 0 --live  to add real-time traffic without re-seeding.
 
                 Note: this is a TELEMETRY GENERATOR, not an instrumentation reference.
-                For how to instrument a real application, see 04-csharp-instrumentation.md.
+                For how to instrument a real application, see docs/02-end-to-end-correlation.md.
                 """);
             return 0;
         }
@@ -147,19 +147,16 @@ public static class Program
             ==============================================================================
 
               This ONE process emits OpenTelemetry spans as if it were {Estate.Services.Length} independent
-              services across {Estate.Services.Select(s => s.Domain).Distinct().Count()} domains. Nothing is deployed - no app, no database, no
-              queue, no external API. Only the telemetry is real, so Application Map,
-              end-to-end transactions and failure analysis all behave exactly as they
-              would for a genuine distributed system.
+              apps. Nothing is deployed - no app, no database, no queue, no external API.
+              Only the telemetry is real, so Application Map, end-to-end transactions and
+              failure analysis all behave exactly as they would for a genuine distributed system.
 
-              Simulated estate ({Estate.Services.Length} services -> {Estate.Services.Length} App Insights resources -> 1 workspace)
+              Simulated estate ({Estate.Services.Length} apps -> {Estate.Services.Length} App Insights resources -> 1 workspace)
+                {string.Join(", ", Estate.Services.Take(4).Select(s => s.Workload))},
+                {string.Join(", ", Estate.Services.Skip(4).Select(s => s.Workload))}
+              Their domain, criticality and owner are Azure tags on each resource (demo/apps.bicep).
+              shared-api-inventory is called from two domains: Retail and Payments.
             """);
-
-        foreach (var g in Estate.Services.GroupBy(s => s.Domain))
-        {
-            var shared = g.Key == "Platform" ? "   <- consumed by Retail AND Payments" : "";
-            Console.WriteLine($"    {g.Key,-10} {string.Join(", ", g.Select(s => s.Workload))}{shared}");
-        }
 
         Console.WriteLine("""
 
@@ -239,10 +236,11 @@ public static class Program
                                    cross-component discovery takes a few minutes
                 Transactions       Investigate > Transaction search > pick a checkout
                 Failures           Investigate > Failures > shared-api-inventory
-                Portfolio          Monitor > Workbooks > "Application Portfolio"
+                Portfolio          the Application Portfolio workbook (deploy.sh prints its link)
+                Catalog            the catalog app (deploy.sh prints its link)
                 Live Metrics       any resource > Live Metrics (live mode only)
             {(backfilled ? "\n              Backfilled telemetry takes 2-5 minutes to become queryable.\n" : "")}
-              Guided walkthrough: demo/README.md (Part 3 - Guided tour)
+              Guided walkthrough: demo/README.md
               ------------------------------------------------------------------------
 
             """);
@@ -422,7 +420,6 @@ public static class Program
             Walk(t);
         }
 
-        var domains = Estate.Services.ToDictionary(s => s.Workload, s => s.Domain);
         var totalSpans = byService.Values.Sum();
 
         Console.WriteLine("  What was generated");
@@ -432,21 +429,14 @@ public static class Program
         foreach (var kv in byFlow.OrderByDescending(k => k.Value))
             Console.WriteLine($"    {kv.Key,-18} {kv.Value,6} traces  ({100.0 * kv.Value / plan.Count,4:F1}%)");
 
-        Console.WriteLine("\n  Spans by service (each one is a separate App Insights resource)");
+        Console.WriteLine("\n  Spans by app (each one is a separate App Insights resource)");
         foreach (var kv in byService.OrderByDescending(k => k.Value))
         {
             var f = failures.GetValueOrDefault(kv.Key);
             var pct = kv.Value == 0 ? 0 : 100.0 * f / kv.Value;
-            var domain = domains.GetValueOrDefault(kv.Key, "external");
             var flag = f > 0 ? "  <-- failures here" : "";
-            Console.WriteLine($"    {kv.Key,-24} {domain,-9} {kv.Value,6} spans  {f,4} failed ({pct,5:F1}%){flag}");
+            Console.WriteLine($"    {kv.Key,-24} {kv.Value,6} spans  {f,4} failed ({pct,5:F1}%){flag}");
         }
-
-        Console.WriteLine("\n  Spans by domain");
-        foreach (var g in byService
-                     .GroupBy(kv => domains.GetValueOrDefault(kv.Key, "external"))
-                     .OrderByDescending(g => g.Sum(x => x.Value)))
-            Console.WriteLine($"    {g.Key,-12} {g.Sum(x => x.Value),6} spans");
 
         if (byDependency.Count > 0)
         {
@@ -461,7 +451,7 @@ public static class Program
         Console.WriteLine($"  Average trace depth: {(plan.Count == 0 ? 0 : (double)totalSpans / plan.Count):F1} spans");
     }
 
-    /// <summary>Reads the .env written by deploy.sh; real environment variables win.</summary>
+    /// <summary>Reads the .env written by demo/setup.sh; real environment variables win.</summary>
     private static Dictionary<string, string> LoadEnv()
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
