@@ -26,11 +26,13 @@ export function CatalogManager({
   nodes,
   intent,
   onIntentHandled,
+  onChanged,
 }: {
   /** Graph nodes, used to show each app's tags. */
-  nodes: GraphNode[];
+  nodes: Pick<GraphNode, 'kind' | 'id' | 'domain' | 'criticality' | 'owner'>[];
   intent: CatalogIntent | null;
   onIntentHandled: () => void;
+  onChanged?: () => void;
 }) {
   const [rows, setRows] = useState<CatalogModel[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -73,7 +75,7 @@ export function CatalogManager({
   }, [intent, loaded, rows, onIntentHandled]);
 
   const tagsById = useMemo(() => {
-    const map = new Map<string, GraphNode>();
+    const map = new Map<string, Pick<GraphNode, 'kind' | 'id' | 'domain' | 'criticality' | 'owner'>>();
     for (const n of nodes) if (n.kind === 'service') map.set(n.id.toLowerCase(), n);
     return map;
   }, [nodes]);
@@ -98,13 +100,14 @@ export function CatalogManager({
         else await createCatalog(input);
         setEditing(null);
         await load();
+        onChanged?.();
       } catch (e) {
         setError(String(e instanceof Error ? e.message : e));
       } finally {
         setBusy(false);
       }
     },
-    [load],
+    [load, onChanged],
   );
 
   const remove = useCallback(
@@ -115,13 +118,14 @@ export function CatalogManager({
       try {
         await deleteCatalog(row.id);
         await load();
+        onChanged?.();
       } catch (e) {
         setError(String(e instanceof Error ? e.message : e));
       } finally {
         setBusy(false);
       }
     },
-    [load],
+    [load, onChanged],
   );
 
   return (
@@ -158,7 +162,7 @@ export function CatalogManager({
               <th>Domain</th>
               <th>Criticality</th>
               <th>Owner</th>
-              <th>SLO</th>
+              <th>Request-success target</th>
               <th>Active</th>
               <th></th>
             </tr>
@@ -199,7 +203,8 @@ export function CatalogManager({
         {loading && <div className="muted center-pad">Loading catalog…</div>}
         <p className="muted table-note">
           Domain, criticality, and owner come from each app's Application Insights tags. They show
-          here for apps that sent telemetry in the graph's time range.
+          here when retained telemetry establishes a service-to-resource mapping. A blank value
+          is not proof that the Azure resource has no tags.
         </p>
       </div>
 
@@ -251,6 +256,9 @@ function CatalogForm({
       <span>{label}</span>
       <input
         type={opts.type ?? 'text'}
+        step={opts.type === 'number' ? 'any' : undefined}
+        min={opts.type === 'number' ? 0 : undefined}
+        max={opts.type === 'number' ? 100 : undefined}
         placeholder={opts.placeholder}
         value={String(form[key] ?? '')}
         required={opts.required}
@@ -265,7 +273,8 @@ function CatalogForm({
         <h2>{initial ? 'Edit catalog entry' : 'Add to catalog'}</h2>
         <p className="form-note">
           Domain, criticality, and owner come from the app's Application Insights tags. The catalog
-          holds the business context Azure doesn't know.
+          holds business context. The percentage is a selected-range request/processing-success
+          target, not uptime or a rolling error budget.
         </p>
         <div className="form-grid">
           <label>
@@ -280,7 +289,7 @@ function CatalogForm({
           </label>
           {field('Display name *', 'displayName', { placeholder: 'Orders API', required: true })}
           {field('Business owner', 'businessOwner', { placeholder: 'VP Digital Commerce' })}
-          {field('SLO (%)', 'slo', { placeholder: '99.9' })}
+          {field('Request-success target (%)', 'slo', { placeholder: '99.9', type: 'number' })}
           {field('On-call', 'onCall', { placeholder: 'team-oncall@contoso.example', full: true })}
           {field('Description', 'description', { full: true })}
           {field('App URL', 'appUrl', { type: 'url', full: true })}

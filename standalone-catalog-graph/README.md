@@ -1,10 +1,10 @@
 # Estate Atlas: the catalog app
 
-A standalone web app that draws the application estate as a live dependency graph and keeps the business context that tags don't hold. What it shows, and how it relates to the workbook, is in [Catalog and workbook](../docs/03-catalog-and-workbook.md#the-catalog-app). This page covers how it works, its API, and how to change it.
+A standalone portfolio and dependency explorer that keeps the business context tags don't hold. Overview, domain/application/resource graph lenses, dependency impact, and actual transaction timelines share one observation window and data model. See [Catalog and workbook](../docs/03-catalog-and-workbook.md#the-catalog-app) for measurement definitions and limits. This page covers its API and development.
 
 ## How it works
 
-Every request to `/api/estate` combines three sources. In Azure, the backend reads them with its system-assigned managed identity, without a SQL password. Locally it uses the developer credential described below. Neither identity authenticates browser users: the UI and API are anonymous until you protect them.
+`/api/portfolio` combines three sources. In Azure, the backend reads them with its system-assigned managed identity, without a SQL password. Locally it uses the developer credential described below. Neither identity authenticates browser users: the UI and API are anonymous until you protect them.
 
 | Source | What it provides | How it's read |
 |---|---|---|
@@ -14,7 +14,7 @@ Every request to `/api/estate` combines three sources. In Azure, the backend rea
 
 The `workload` column joins catalog entries to the graph. It holds the effective `AppRoleName`: `OTEL_SERVICE_NAME`, or `<namespace>.<name>` when `service.namespace` is set. Keep that value unique within the workspace and use [separate platform views per environment](../docs/01-topology.md#one-environment-per-deployment). Tags are matched by resource ID instead, through `_ResourceId` on every telemetry row.
 
-If the tags or the catalog can't be read, the graph still renders from telemetry alone, and the response carries a warning that the page shows as a banner.
+If the tags or the catalog can't be read, the graph can still render from telemetry alone, and the response carries a warning that the page shows as a banner. Coverage denominators are marked unavailable when registration data cannot be read. Telemetry-query/partial-result failures do not publish invented healthy totals.
 
 ## API
 
@@ -22,6 +22,9 @@ If the tags or the catalog can't be read, the graph still renders from telemetry
 |---|---|---|
 | `GET` | `/api/health` | Liveness, which settings are present, and the Node.js version |
 | `GET` | `/api/estate?rangeHours=N` | The graph: telemetry, tags, and catalog, joined. `N` is 1 to 720; default 24. The UI explicitly requests seven days initially |
+| `GET` | `/api/portfolio?rangeHours=N&end=<ISO timestamp>` | Apps, exact targets/connections, domain/owner measures, previous-period measures, trends, coverage, and hosting context. Default seven days; `end` defaults to now |
+| `GET` | `/api/transactions?app=<role>&mode=failed&rangeHours=N&end=<ISO timestamp>` | Up to 50 failed request/processing examples; `mode=slow` sorts observed examples by duration. Returns an explicit truncation flag |
+| `GET` | `/api/transactions/:operationId?rangeHours=N&end=<ISO timestamp>` | Observed W3C transaction spans, exceptions, and warning/error logs. Uses bounded results and reports incomplete/truncated context |
 | `GET` | `/api/catalog` | All catalog entries |
 | `GET` | `/api/catalog/:id` | One entry |
 | `POST` | `/api/catalog` | Create an entry |
@@ -30,6 +33,10 @@ If the tags or the catalog can't be read, the graph still renders from telemetry
 | `POST` | `/api/catalog/import` | Insert an array of entries. Existing workloads are skipped, never overwritten |
 
 Entries need `workload` and `displayName`. Links must be `http` or `https`. The API is anonymous; see the [warning](../docs/03-catalog-and-workbook.md#the-catalog-app) before storing real data.
+
+The portfolio response's window anchors all comparisons. Pass its exact `end` and `hours` to transaction queries rather than recomputing now on the client. `generatedAt` is query completion, not the last telemetry event. Invalid windows/selectors return **400**; partial Log Analytics responses fail explicitly rather than publish incomplete healthy totals.
+
+The `slo` field is now a validated finite percentage from 0 to 100 for observed request/processing success. The separate graph/workbook failure-rate colors are unchanged. Review legacy non-demo target meanings before using the comparison. No manual latency target, hosting-resource list, or metadata review date is stored.
 
 ### Create, update, and import
 
@@ -133,10 +140,13 @@ npm run build           # type-checks, then builds dist/public and dist-server
 
 ```text
 common/shared.ts         Types shared by the server and the browser
+common/portfolio.ts      Portfolio, graph, observation, and transaction contracts/measure helpers
 server/
   index.ts               Express: static files and the JSON API
   estate.kql             Topology query, shared with the workbook
   estate.ts              Runs the query and joins tags and catalog entries into the graph
+  portfolio.ts           Reconciles observations, registrations, business context, and host identity
+  portfolioQueries.ts    Fixed-window aggregation, trends, resource metadata, and bounded trace queries
   logAnalytics.ts        Log Analytics query API client
   resourceGraph.ts       Reads tags from Azure Resource Graph
   catalogDb.ts           Catalog table: schema on startup, CRUD, import
@@ -146,6 +156,9 @@ server/
 src/
   App.tsx                Page shell, graph controls, and the selected-app card
   EstateGraph.tsx        Cytoscape.js graph
+  graphModel.ts          Domain/resource projections and cycle-safe impact/trace highlighting
+  PortfolioOverview.tsx Portfolio summaries, attention list, and coverage
+  TransactionPanel.tsx  Individual spans, durations/outcomes, and correlated events
   CatalogManager.tsx     Catalog table and form
   colors.ts              Domain colors, assigned from whatever domains the tags contain
 test/                    Unit tests

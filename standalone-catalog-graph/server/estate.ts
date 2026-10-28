@@ -36,12 +36,16 @@ export function clampRange(hours: unknown): number {
 }
 
 /** The shared estate query, bound to a time range, returning nodes and edges in one result. */
-export function buildEstateKql(rangeHours: number): string {
+export function estateSource(): string {
   if (!estateKql) {
     if (!KQL_PATH) throw new Error('server/estate.kql was not found.');
     estateKql = readFileSync(KQL_PATH, 'utf8');
   }
-  return `${estateKql.replaceAll('{TimeRange}', `> ago(${clampRange(rangeHours)}h)`)}\nnodes\n| union links`;
+  return estateKql;
+}
+
+export function buildEstateKql(rangeHours: number): string {
+  return `${estateSource().replaceAll('{TimeRange}', `> ago(${clampRange(rangeHours)}h)`)}\nnodes\n| union links`;
 }
 
 function num(v: unknown): number {
@@ -79,7 +83,7 @@ export function assembleGraph(
     nodes.push({
       id,
       kind,
-      name: cat?.displayName || id,
+      name: cat?.displayName || str(r.Name) || id,
       domain: tags?.domain ?? '',
       criticality: tags?.criticality ?? '',
       owner: tags?.owner ?? '',

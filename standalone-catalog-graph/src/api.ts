@@ -1,4 +1,5 @@
 import type { CatalogInput, CatalogModel, EstateGraph } from '../common/shared';
+import type { Portfolio, QueryWindow, Transaction, TransactionExample } from '../common/portfolio';
 
 /** Thin fetch wrapper around the Express API served from the same origin. */
 
@@ -22,6 +23,22 @@ export async function fetchEstate(rangeHours: number): Promise<EstateGraph> {
 
 export async function fetchCatalog(): Promise<CatalogModel[]> {
   return json<CatalogModel[]>(await fetch('/api/catalog'));
+}
+
+export async function fetchPortfolio(hours: number): Promise<Portfolio> {
+  return json<Portfolio>(await fetch(`/api/portfolio?rangeHours=${hours}`));
+}
+
+const windowParameters = (window: QueryWindow) =>
+  `rangeHours=${window.hours}&end=${encodeURIComponent(window.end)}`;
+
+export async function fetchExamples(window: QueryWindow, app: string, mode: 'failed' | 'slow'):
+Promise<{ items: TransactionExample[]; truncated: boolean }> {
+  return json(await fetch(`/api/transactions?${windowParameters(window)}&app=${encodeURIComponent(app)}&mode=${mode}`));
+}
+
+export async function fetchTransaction(window: QueryWindow, operationId: string): Promise<Transaction> {
+  return json(await fetch(`/api/transactions/${encodeURIComponent(operationId)}?${windowParameters(window)}`));
 }
 
 export async function createCatalog(input: CatalogInput): Promise<CatalogModel> {

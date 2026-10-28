@@ -11,7 +11,7 @@ let classified =
                            tostring(tg.domain)),
              Owner = iff(isempty(tostring(tg.owner)), "n/a", tostring(tg.owner)),
              Tier = iff(isempty(tostring(tg.criticality)), "n/a", tostring(tg.criticality))
-    | extend Name = Id
+    | extend Name = coalesce(Name, Id)
     // The graph shows one tooltip string per node, so the whole hover card is built here.
     | extend Hover = strcat(
         Name, "  [", Kind, "]",

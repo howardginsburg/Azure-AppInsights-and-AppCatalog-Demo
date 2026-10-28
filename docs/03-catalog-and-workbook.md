@@ -6,7 +6,7 @@ The portfolio workbook and the Estate Atlas catalog app show the same estate, as
 |---|---|---|---|
 | Telemetry, in Log Analytics | Requests, dependencies, logs, exceptions, and the health derived from them | `AppRoleName` (the app's service name) and `_ResourceId` | Both |
 | Azure tags, through Azure Resource Graph | `domain`, `criticality`, `owner` | The Application Insights resource ID | Both |
-| The catalog, in Azure SQL | Display name, description, business owner, SLO, on-call, app, docs, runbook, and repo links | The service name | The catalog app. The workbook links to it |
+| The catalog, in Azure SQL | Display name, description, business owner, request-success target, on-call, app, docs, runbook, and repo links | The service name | The catalog app. The workbook links to it |
 
 ```mermaid
 flowchart LR
@@ -42,7 +42,7 @@ These are different states, not one registration action:
 | Requests or processing spans received | Estate graph, using the effective service name and the tags of the receiving resource |
 | Business context added | Catalog UI/API; the entry is joined onto the observed graph app |
 
-A catalog entry does not create telemetry or force a graph node to exist. Separate environments use [separate platform views](01-topology.md#one-environment-per-deployment).
+A catalog entry does not create telemetry. The catalog's Overview and application graph retain catalog-only apps as **Not observed**, rather than silently dropping them or marking them Healthy. Separate environments use [separate platform views](01-topology.md#one-environment-per-deployment).
 
 ## The workbook
 
@@ -57,7 +57,7 @@ A catalog entry does not create telemetry or force a graph node to exist. Separa
 | **Transactions** | Every failed request. Select one to rebuild its whole call tree across apps, with the exceptions raised along the way |
 | **Metadata quality** | Registered resources that are missing tags or that sent no telemetry in the time range |
 
-An app is **Healthy** below 1% failed requests, **Warning** from 1%, and **Error** from 5%, over the selected time range. These are observed failure-rate labels, not SLO evaluation. An app can be marked Healthy while having unacceptable latency. The catalog's SLO is business context, not an alert or a calculation input.
+An app is **Healthy** below 1% failed requests, **Warning** from 1%, and **Error** from 5%, over the selected time range. These workbook/graph labels remain separate from the catalog's request-success target comparison. An app can be marked Healthy while missing that target or having unacceptable latency. Neither calculation configures an alert.
 
 ![Azure portal portfolio workbook showing domain health and expanded application rows](images/azure-workbook-portfolio.png)
 
@@ -104,17 +104,27 @@ Estate Atlas runs on App Service with a system-assigned managed identity. That i
 
 Those permissions simplify this starter, including schema creation; they are not a production least-privilege design. Browser access is independent of the backend identity.
 
-- **Estate graph.** One node per app and backing service, from the shared topology query. Fill is health, the ring is domain, size is traffic, and databases, queues, and external calls get their own shapes. Select an app to see its tags, catalog entry, live telemetry, and links. Apps missing tags are marked **untagged**; apps with no catalog entry are marked **uncataloged**, with an **Add to catalog** button.
+- **Overview.** Domain/owner rollups, a sortable application/attention table, observation times, and registration/catalog coverage. Counts distinguish resources from apps. Missing data and unavailable data sources are not reported as healthy zeroes.
+- **Domain map.** The Graph view starts with collapsed business domains. Expand a domain to reveal its apps without losing cross-domain connections, or choose **Applications** for the full estate. The graph and workbook read the same topology.
+- **Impact and connections.** Select an app for direct callers/dependencies and cycle-safe upstream/downstream exposure. Select a line for typed call/failure/P95/protocol evidence. Reachability is potential exposure, not proven customer impact; hosting and monitoring relationships are excluded from call traversal.
+- **Actual transaction overlay.** Select a failed/slow request example to highlight its observed path and open a span timeline with offsets, durations, failures, result codes, exceptions, and warning/error logs. Repeated calls and asynchronous work remain individual spans. Portfolio filters do not hide the chosen transaction's context.
+- **Resources.** Solid lines are calls, dashed lines are telemetry destinations, and dotted lines are reported hosts. `_ResourceId` identifies the receiving Application Insights resource, not compute. Hosting is read from resource-detector metadata such as `cloud.resource_id` and enriched only by exact, readable Resource Graph identity. The simulated apps explicitly have no hosting metadata; the catalog's own infrastructure is not assigned to them.
 - **Catalog.** Add, edit, and delete business context. Domain, criticality, and owner show read-only, from tags.
 - **Deep links.** `https://<catalog>/?workload=<service name>` selects that app. The workbook's **Open in catalog** links use it.
 
 If the tags or the catalog can't be read, the graph still renders and a banner explains what's missing.
 
-The catalog page loads on open, when its time range changes, or when you choose **Refresh**; it is not a continuously streaming dashboard. The page initially requests seven days, whereas the estate API defaults to 24 hours when no range is supplied. Recent log-query data is also distinct from Application Insights **Live Metrics**.
+The catalog page loads on open, when its time range changes, or when you choose **Refresh**; it is not a continuously streaming dashboard. It starts with seven days. The window end is fixed for the response and for its transaction queries. Query completion and last telemetry event are displayed separately: recently querying an old backfill does not make it live data.
 
-![Azure-hosted Estate Atlas showing the full graph and the inventory service's detail card](images/estate-atlas.png)
+The existing catalog percentage now has one explicit meaning: **successful observed requests/processing operations divided by operations with known outcomes in the selected range**. It is not uptime, a customer-journey success rate, or a rolling error budget. The API still calls this field `slo` for compatibility; no second target is stored. Blank targets are Not configured, invalid values are flagged, and no known outcomes means Not observed. Existing non-demo entries should be reviewed before adopting this definition.
+
+Latency compares P95 with the immediately preceding equal-length period. Missing baseline means Insufficient history; zero baseline has no relative percentage change. Counts use `ItemCount` estimates where available, while sample counts remain visible. Group P95 is computed from underlying samples, never averaged from app percentiles. When filters narrow a group beyond the available grouped query, P95 is explicitly omitted. Comparisons are descriptive, not automated regression verdicts; sparse traffic and operation mix matter. Thirty-day retention does not provide a complete preceding baseline for a thirty-day selection.
+
+![Azure-hosted Estate Atlas showing the domain map with Platform expanded and the inventory service's detail card](images/estate-atlas.png)
 
 *The selected app's card separates Azure classification, SQL business context, and observed telemetry.*
+
+Resource metadata names vary by exporter version (`_OTELRESOURCE_` and the observed `_APPRESOURCEPREVIEW_` shape). The implementation preserves app/instance/component identity and metadata timestamps; absent, malformed, or unreadable host identities remain explicit. The first documented detector reference is [.NET on App Service](https://learn.microsoft.com/azure/azure-monitor/app/opentelemetry-collect-detect#resource-detectors). No real hosted-workload smoke test is implied by the unhosted simulator. For a manually configured detector fallback, derive resource attributes from platform/deployment identity, not a second catalog inventory.
 
 The full API and local development setup are in the [catalog app README](../standalone-catalog-graph/README.md). To load many entries at once, post an array to the import endpoint. Existing entries are never overwritten:
 

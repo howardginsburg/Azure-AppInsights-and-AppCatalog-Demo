@@ -35,3 +35,12 @@ test('recognizes GUIDs', () => {
   assert.ok(isGuid('3f2504e0-4f89-11d3-9a0c-0305e82c3301'));
   assert.ok(!isGuid('not-a-guid'));
 });
+
+test('validates the request-success target instead of storing an arbitrary SLO string', () => {
+  for (const slo of ['-1', '101', 'Infinity', '99.9%']) {
+    assert.ok('error' in parseCatalogInput({ workload: 'a', displayName: 'A', slo }));
+  }
+  for (const slo of ['', '0', '99.9', '100']) {
+    assert.ok(!('error' in parseCatalogInput({ workload: 'a', displayName: 'A', slo })));
+  }
+});

@@ -182,11 +182,15 @@ The domains and owners on every tab come from the deployed resources' Azure tags
 
 Open the **Catalog app** link. The graph is the same estate, drawn from the same topology query.
 
-- Select `shared-api-inventory`. The card shows its tags, its catalog entry (business owner, SLO, on-call), live telemetry, and links.
-- Choose **Edit catalog entry**, change the SLO, and save. The workbook never stored it, so there's nothing to sync.
+- **Overview** starts with domain/owner summaries, sortable apps and attention findings. Compare settlement's observed request-success percentage with its target; this comparison is separate from failure-rate health.
+- Open **Graph**: domains start collapsed. Expand Platform, then select `shared-api-inventory`. Its card includes the description, owners, target, on-call, observation timestamps, previous-period latency, and operational links.
+- Choose **Upstream consumers** to highlight potential exposure across domains. Select a connection to inspect calls, failures, duration, protocol, and whether the relationship is matched or inferred.
+- Choose **Applications** for the full estate, or **Resources** to distinguish telemetry destinations from hosting. The eight simulated apps have no real workload hosts and say so.
+- Select settlement and open a failed transaction example. The overlay and timeline retain all observed spans, including successful checkout and the later failed commit; exceptions and warning/error logs retain their span context.
+- Choose **Edit catalog entry**, change the request-success target, and save. The app reloads the same authoritative catalog value; the workbook never stored it.
 - From the workbook's Portfolio tab, choose **Open in catalog** on any app. It opens the catalog with that app selected.
 
-The SLO is descriptive business context; saving it does not change failure-rate health calculations or configure an alert.
+The target measures observed request/processing success in the selected window, not uptime or an error budget. Saving it does not change the separate failure-rate health colors or configure an alert. The default backfill has no preceding seven-day baseline, so a seven-day comparison correctly shows Insufficient history.
 
 ### 9. Register an app yourself
 

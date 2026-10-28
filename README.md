@@ -3,15 +3,19 @@
 A deployable starter that shows two things:
 
 1. **Stitching.** Separate apps (A → B → C), each with its own Application Insights resource, produce *one* end-to-end transaction: requests, HTTP calls, database and queue calls, exceptions, and logs. W3C trace context ties the spans together, and one shared Log Analytics workspace puts them all in reach of a single query.
-2. **The app catalog.** *Estate Atlas*, a small web app, draws the observed dependency graph from that telemetry, classifies every app from its Azure tags, and holds business context: what an app is for, its business owner, SLO, runbook, and on-call.
+2. **The app catalog.** *Estate Atlas* combines a portfolio overview, domain/application/resource graph lenses, dependency impact, and actual transaction timelines. It classifies apps from Azure tags and holds business context: purpose, owners, request-success targets, runbooks, and on-call.
 
 A portfolio workbook shows the same estate inside the Azure portal. A telemetry simulator supplies data for eight demo apps without deploying real workload services. The catalog platform itself uses real Azure resources.
 
 ## What you'll see
 
-![Estate Atlas running in Azure, with the dependency graph and the inventory service's tags, business context, and telemetry](docs/images/estate-atlas.png)
+![Estate Atlas portfolio overview in Azure with domain rollups, request-success targets, freshness, and an application attention list](docs/images/estate-atlas-overview.png)
 
-*The Azure-hosted catalog, with one app selected. Classification comes from tags; business context comes from SQL; traffic and health come from telemetry.*
+*The Azure-hosted Overview makes ownership, observations, targets, and missing context visible together. A seven-day backfill with no preceding baseline does not invent a latency comparison.*
+
+![Estate Atlas domain map with Platform expanded and the inventory service's tags, business context, and observed outcomes](docs/images/estate-atlas.png)
+
+*The Graph starts with domains. Here Platform is expanded and Inventory is selected while Retail, Payments, and Customer remain collapsed. Classification comes from tags; business context comes from SQL; traffic and health come from telemetry.*
 
 ![Application Portfolio workbook in the Azure portal, with domains expanded into their apps](docs/images/azure-workbook-portfolio.png)
 
@@ -166,7 +170,7 @@ The script asks you to type the group name, **force-deletes the group's Log Anal
 
 ## Scope and publishing
 
-This is a deployable learning starter, not a production service catalog or a comprehensive instrumentation tutorial. The snippets focus on .NET; other languages can use the same resource/tag and trace-context contract. Multi-workspace aggregation, combined environments, SLO enforcement, and production authentication/authorization are not implemented here.
+This is a deployable learning starter, not a production CMDB or a comprehensive instrumentation tutorial. The snippets focus on .NET; other languages can use the same resource/tag and trace-context contract. Multi-workspace aggregation, combined environments, uptime/error-budget SLO enforcement, and production authentication/authorization are not implemented here. Request-success comparisons and latency trends are observational; resource hosting is shown only when instrumentation reports an identity that can be resolved.
 
 For questions or reproducible problems, use this repository's [GitHub issues](https://github.com/howardginsburg/Azure-AppInsights-and-AppCatalog-Demo/issues). Include the command, symptom, and sanitized logs; never include connection strings, tokens, or real customer telemetry.
 

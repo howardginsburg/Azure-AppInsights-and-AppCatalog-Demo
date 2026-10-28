@@ -29,6 +29,7 @@ import {
   updateCatalog,
 } from './catalogDb.js';
 import type { CatalogInput } from '../common/shared.js';
+import { getPortfolio, getExamples, getTransaction, InputError, parseWindow } from './portfolio.js';
 
 assertSupportedNode();
 
@@ -41,6 +42,11 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 
 function fail(res: Response, route: string, err: unknown) {
+  if (err instanceof InputError) {
+    console.warn(`${route}: ${err.message}`);
+    res.status(400).json({ error: err.message });
+    return;
+  }
   console.error(`${route} failed:`, err);
   res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
 }
@@ -66,6 +72,34 @@ app.get('/api/estate', async (req, res) => {
     res.json(await getEstateGraph(req.query.rangeHours));
   } catch (err) {
     fail(res, 'GET /api/estate', err);
+  }
+});
+
+app.get('/api/portfolio', async (req, res) => {
+  try {
+    res.json(await getPortfolio(parseWindow(req.query.rangeHours, req.query.end)));
+  } catch (err) {
+    fail(res, 'GET /api/portfolio', err);
+  }
+});
+
+app.get('/api/transactions', async (req, res) => {
+  try {
+    if (typeof req.query.app !== 'string') throw new InputError('app must be a service name.');
+    if (req.query.mode !== undefined && req.query.mode !== 'failed' && req.query.mode !== 'slow') {
+      throw new InputError('mode must be failed or slow.');
+    }
+    res.json(await getExamples(parseWindow(req.query.rangeHours, req.query.end), req.query.app, req.query.mode !== 'slow'));
+  } catch (err) {
+    fail(res, 'GET /api/transactions', err);
+  }
+});
+
+app.get('/api/transactions/:operationId', async (req, res) => {
+  try {
+    res.json(await getTransaction(parseWindow(req.query.rangeHours, req.query.end), req.params.operationId));
+  } catch (err) {
+    fail(res, 'GET /api/transactions/:operationId', err);
   }
 });
 

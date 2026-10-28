@@ -1,3 +1,5 @@
+import { azureQuery } from './azureQuery.js';
+
 /**
  * Log Analytics query client.
  *
@@ -14,7 +16,10 @@ export type LogAnalyticsTable = {
   columns: LogAnalyticsColumn[];
   rows: unknown[][];
 };
-export type LogAnalyticsResponse = { tables: LogAnalyticsTable[] };
+export type LogAnalyticsResponse = {
+  tables: LogAnalyticsTable[];
+  error?: { code?: string; message?: string };
+};
 
 /** Row objects keyed by column name — easier to consume than positional arrays. */
 export type QueryRow = Record<string, unknown>;
@@ -35,7 +40,7 @@ export async function queryLogAnalytics(
   const host = (opts.host ?? DEFAULT_HOST).replace(/\/+$/, '');
   const url = `${host}/v1/workspaces/${encodeURIComponent(opts.workspaceId)}/query`;
 
-  const res = await fetch(url, {
+  const res = await azureQuery(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${opts.token}`,
@@ -52,9 +57,12 @@ export async function queryLogAnalytics(
   }
 
   const body = (await res.json()) as LogAnalyticsResponse;
+  if (body.error) {
+    throw new Error(`Log Analytics returned partial results: ${body.error.code ?? ''} ${body.error.message ?? ''}`);
+  }
   const table =
     body.tables?.find((t) => t.name === 'PrimaryResult') ?? body.tables?.[0];
-  if (!table) return [];
+  if (!table) throw new Error('Log Analytics returned no result table.');
 
   const cols = table.columns.map((c) => c.name);
   return table.rows.map((row) => {

@@ -16,23 +16,31 @@
 // ResourceId is the Application Insights resource that received a service's telemetry. Its
 // Azure tags (domain, criticality, owner) classify the service.
 let roles = toscalar(AppRequests | where TimeGenerated {TimeRange} | summarize make_set(AppRoleName));
+let receivers =
+    AppRequests
+    | where TimeGenerated {TimeRange}
+    | summarize ReceiverRoles = make_set(AppRoleName, 20) by depId = ParentId, operation = OperationId;
 let depsResolved =
     AppDependencies
     | where TimeGenerated {TimeRange}
-    | project depId = Id, src = AppRoleName, Target, DependencyType, DurationMs, Success
-    | join kind=leftouter (
-        AppRequests | where TimeGenerated {TimeRange} | project depId = ParentId, dstRole = AppRoleName
-      ) on depId
+    | project depId = Id, operation = OperationId, src = AppRoleName, Target, DependencyType,
+              DurationMs, Success, TimeGenerated, Weight = coalesce(ItemCount, 1)
+    | join kind=leftouter receivers on depId, operation
+    // A one-to-many send does not mean the producer sent several messages.
+    | extend dstRole = iff(array_length(ReceiverRoles) == 1, tostring(ReceiverRoles[0]), "")
     | extend httpRole = iff(DependencyType == "HTTP",
         tostring(split(tostring(split(tostring(split(Target, "/")[0]), ":")[0]), ".")[0]), "")
     | extend isSvc = isnotempty(dstRole) or httpRole in (roles)
     // SQL and Cosmos DB targets look like "host:port | DbName"; the database name is the useful label.
     | extend dbName = tostring(split(Target, "| ")[1])
-    | extend tgt = case(
+    | extend TargetName = case(
         isnotempty(dstRole), dstRole,
         httpRole in (roles), httpRole,
         isnotempty(dbName),  dbName,
         tostring(split(tostring(split(Target, "/")[0]), ":")[0]))
+    | extend tgt = iff(isSvc, TargetName, strcat("target:", DependencyType, ":", url_encode_component(Target)))
+    | extend Evidence = case(isnotempty(dstRole), "matched spans",
+                             httpRole in (roles), "inferred hostname", "observed target")
     | extend tgtKind = case(
         isSvc, "service",
         DependencyType in ("SQL", "mysql", "postgresql"), "database",
@@ -43,16 +51,19 @@ let nodes =
     union
       (AppRequests
        | where TimeGenerated {TimeRange}
-       | summarize Calls = count(), Fails = countif(Success == false),
-                   P95 = round(percentile(DurationMs, 95), 0),
+       | summarize Calls = sum(coalesce(ItemCount, 1)), Fails = sumif(coalesce(ItemCount, 1), Success == false),
+                   P95 = round(percentilew(DurationMs, coalesce(ItemCount, 1), 95), 1),
                    ResourceId = take_any(tolower(_ResourceId))
          by Id = AppRoleName
-       | extend Kind = "service"),
+       | extend Kind = "service", Name = Id),
       (depsResolved
        | where not(isSvc)
-       | summarize Calls = count(), Fails = countif(Success == false),
-                   P95 = round(percentile(DurationMs, 95), 0)
-         by Id = tgt, Kind = tgtKind
+       | summarize Calls = sum(Weight), Fails = sumif(Weight, Success == false),
+                   P95 = round(percentilew(DurationMs, Weight, 95), 1),
+                   LastSeen = max(TimeGenerated), FirstSeen = min(TimeGenerated),
+                   Rows = count(), Good = sumif(Weight, Success == true),
+                   Unknown = sumif(Weight, isnull(Success))
+         by Id = tgt, Name = TargetName, Kind = tgtKind, RawTarget = Target, DependencyType
        | extend ResourceId = "")
     | extend FailPct = iff(Calls == 0, 0.0, round(100.0 * Fails / Calls, 2))
     | extend Status = case(
@@ -60,11 +71,18 @@ let nodes =
         FailPct >= 5.0,    "Error",
         FailPct >= 1.0,    "Warning",
                            "Healthy")
-    | project Id, Kind, ResourceId, Calls, Fails, FailPct, P95, Status;
+    | project Id, Name, Kind, ResourceId, Calls, Fails, FailPct, P95, Status,
+              LastSeen, FirstSeen, Rows, Good, Unknown, RawTarget, DependencyType;
 let links =
     depsResolved
-    | summarize Calls = count(), Fails = countif(Success == false)
-        by SourceId = src, TargetId = tgt, DependencyType
+    | summarize Calls = sum(Weight), Fails = sumif(Weight, Success == false),
+                Good = sumif(Weight, Success == true), Unknown = sumif(Weight, isnull(Success)),
+                P95 = round(percentilew(DurationMs, Weight, 95), 1),
+                LastSeen = max(TimeGenerated), FirstSeen = min(TimeGenerated), Rows = count()
+        by SourceId = src, TargetId = tgt, DependencyType, RawTarget = Target, Evidence, DestinationKind = iff(isSvc, "service", "target")
     | extend EdgeLabel = iff(Fails > 0, strcat(DependencyType, "  ", Calls, "  (", Fails, " failed)"),
                                         strcat(DependencyType, "  ", Calls))
-    | project SourceId, TargetId, Calls, EdgeLabel;
+    | extend EdgeId = strcat("edge:", url_encode_component(SourceId), ":", url_encode_component(TargetId),
+                             ":", DependencyType, ":", Evidence, ":", url_encode_component(RawTarget))
+    | project EdgeId, SourceId, TargetId, Calls, EdgeLabel, Fails, Good, Unknown, P95,
+              LastSeen, FirstSeen, Rows, DependencyType, RawTarget, Evidence, DestinationKind;

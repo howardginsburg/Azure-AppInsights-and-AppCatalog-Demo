@@ -39,6 +39,9 @@ export function parseCatalogInput(body: unknown): CatalogInput | { error: string
 
   if (!input.workload) return { error: 'Field "workload" is required.' };
   if (!input.displayName) return { error: 'Field "displayName" is required.' };
+  if (input.slo && (!Number.isFinite(Number(input.slo)) || Number(input.slo) < 0 || Number(input.slo) > 100)) {
+    return { error: 'Field "slo" must be a request-success percentage between 0 and 100.' };
+  }
   for (const [field, max] of Object.entries(MAX_LENGTH)) {
     const value = input[field as keyof typeof MAX_LENGTH];
     if (value.length > max) return { error: `Field "${field}" exceeds ${max} characters.` };
